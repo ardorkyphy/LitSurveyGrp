@@ -9,6 +9,7 @@ and records where citation counts and abstracts came from.
 
 import json
 import re
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,6 +19,7 @@ from refchaser.paper_models import ArticleRecord
 
 
 DEFAULT_SOURCES = ["openalex", "semantic-scholar", "europe-pmc", "crossref"]
+DEFAULT_REQUEST_INTERVAL_SECONDS = 3.0
 
 
 class OpenAlexMetadataResolver:
@@ -221,15 +223,22 @@ class MetadataEnrichmentService:
         sources: list[str] | None = None,
         output_path: Path | None = None,
         timeout: int = 15,
+        request_interval: float = DEFAULT_REQUEST_INTERVAL_SECONDS,
         session=None,
         resolvers: list | None = None,
+        sleep_func=None,
+        monotonic_func=None,
     ):
         self.manifest_path = Path(manifest_path)
         self.output_path = Path(output_path) if output_path else self.manifest_path.parent / "enriched_manifest.json"
         self.sources = sources or list(DEFAULT_SOURCES)
         self.timeout = timeout
+        self.request_interval = max(0.0, float(request_interval))
         self.session = session
         self.resolvers = resolvers or self.build_resolvers()
+        self.sleep_func = sleep_func or time.sleep
+        self.monotonic_func = monotonic_func or time.monotonic
+        self._last_request_at: float | None = None
 
     def build_resolvers(self) -> list:
         registry = {
@@ -266,6 +275,7 @@ class MetadataEnrichmentService:
         errors = []
         for resolver in self.resolvers:
             try:
+                self.throttle()
                 metadata = self._clean_metadata(resolver.resolve(article))
             except Exception as exc:
                 errors.append(f"{resolver.name}:{exc.__class__.__name__}")
@@ -282,6 +292,20 @@ class MetadataEnrichmentService:
         else:
             article.enrichment_status = "not_found"
         return article
+
+    def throttle(self) -> None:
+        """Respect a minimum interval between external metadata API calls."""
+        if self.request_interval <= 0:
+            self._last_request_at = self.monotonic_func()
+            return
+        now = self.monotonic_func()
+        if self._last_request_at is not None:
+            elapsed = now - self._last_request_at
+            wait_seconds = self.request_interval - elapsed
+            if wait_seconds > 0:
+                self.sleep_func(wait_seconds)
+                now = self.monotonic_func()
+        self._last_request_at = now
 
     def merge_metadata(self, article: ArticleRecord, metadata: dict, source: str) -> bool:
         changed = False
@@ -394,6 +418,7 @@ def run_from_args(args) -> int:
         sources=getattr(args, "sources", None),
         output_path=Path(args.out) if getattr(args, "out", None) else None,
         timeout=getattr(args, "timeout", 15),
+        request_interval=getattr(args, "request_interval", DEFAULT_REQUEST_INTERVAL_SECONDS),
     )
     service.run()
     return 0

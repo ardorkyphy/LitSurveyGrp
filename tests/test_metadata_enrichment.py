@@ -4,6 +4,7 @@ import json
 
 from refchaser.enrichment.metadata_enrichment import (
     CrossrefMetadataResolver,
+    DEFAULT_REQUEST_INTERVAL_SECONDS,
     MetadataEnrichmentService,
     OpenAlexMetadataResolver,
     openalex_abstract,
@@ -117,6 +118,7 @@ def test_metadata_enrichment_service_merges_sources_and_writes_manifest(tmp_path
             FakeResolver("openalex", {"citation_count": 11, "journal": "Nature Aging"}),
             FakeResolver("semantic-scholar", {"abstract": "Semantic Scholar abstract.", "authors": ["Alice"]}),
         ],
+        request_interval=0,
     )
 
     enriched = service.run()
@@ -138,6 +140,7 @@ def test_metadata_enrichment_service_keeps_existing_abstract_source_priority():
     service = MetadataEnrichmentService(
         "manifest.json",
         resolvers=[FakeResolver("semantic-scholar", {"abstract": "New abstract."})],
+        request_interval=0,
     )
 
     enriched = service.enrich_article(article)
@@ -153,12 +156,14 @@ def test_metadata_enrichment_cli_adapter_runs(monkeypatch, tmp_path):
         sources = ["openalex"]
         out = None
         timeout = 3
+        request_interval = 5.0
 
     captured = {}
 
     def fake_run(self):
         captured["sources"] = self.sources
         captured["timeout"] = self.timeout
+        captured["request_interval"] = self.request_interval
         return []
 
     monkeypatch.setattr(MetadataEnrichmentService, "run", fake_run)
@@ -166,3 +171,54 @@ def test_metadata_enrichment_cli_adapter_runs(monkeypatch, tmp_path):
     assert run_from_args(Args()) == 0
     assert captured["sources"] == ["openalex"]
     assert captured["timeout"] == 3
+    assert captured["request_interval"] == 5.0
+
+
+def test_metadata_enrichment_default_request_interval_is_three_seconds():
+    service = MetadataEnrichmentService("manifest.json", resolvers=[], sleep_func=lambda seconds: None)
+
+    assert service.request_interval == DEFAULT_REQUEST_INTERVAL_SECONDS
+
+
+def test_metadata_enrichment_service_throttles_between_resolver_calls():
+    now = {"value": 100.0}
+    sleeps = []
+
+    def fake_monotonic():
+        return now["value"]
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        now["value"] += seconds
+
+    service = MetadataEnrichmentService(
+        "manifest.json",
+        resolvers=[
+            FakeResolver("openalex", {"citation_count": 1}),
+            FakeResolver("crossref", {"journal": "Nature Aging"}),
+        ],
+        request_interval=3.0,
+        sleep_func=fake_sleep,
+        monotonic_func=fake_monotonic,
+    )
+
+    service.enrich_article(ArticleRecord(title="Paper"))
+
+    assert sleeps == [3.0]
+
+
+def test_metadata_enrichment_service_can_disable_throttle_for_tests():
+    sleeps = []
+    service = MetadataEnrichmentService(
+        "manifest.json",
+        resolvers=[
+            FakeResolver("openalex", {"citation_count": 1}),
+            FakeResolver("crossref", {"journal": "Nature Aging"}),
+        ],
+        request_interval=0,
+        sleep_func=sleeps.append,
+    )
+
+    service.enrich_article(ArticleRecord(title="Paper"))
+
+    assert sleeps == []

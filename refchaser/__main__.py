@@ -45,6 +45,7 @@ def build_parser():
     enrich.add_argument("--sources", nargs="+", choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"])
     enrich.add_argument("--out")
     enrich.add_argument("--timeout", type=int, default=15)
+    enrich.add_argument("--request-interval", type=float, default=3.0, help="minimum seconds between metadata API calls")
 
     stats = subparsers.add_parser("stats", help="write research-oriented statistics from a manifest")
     stats.add_argument("--manifest", required=True)

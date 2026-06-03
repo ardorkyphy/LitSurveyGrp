@@ -52,6 +52,8 @@ def test_cli_enrich_metadata_arguments():
         r"D:\中文路径\enriched.json",
         "--timeout",
         "9",
+        "--request-interval",
+        "5",
     ])
 
     assert args.command == "enrich-metadata"
@@ -59,6 +61,7 @@ def test_cli_enrich_metadata_arguments():
     assert args.sources == ["openalex", "crossref"]
     assert args.out.endswith("enriched.json")
     assert args.timeout == 9
+    assert args.request_interval == 5
 
 
 def test_cli_stats_arguments():
