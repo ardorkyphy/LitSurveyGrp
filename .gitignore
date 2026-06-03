@@ -1,0 +1,36 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local environment
+.env
+.env.*
+
+# Refchaser generated outputs
+article_manifest.json
+multi_journal_manifest.json
+classified_manifest.json
+enriched_manifest.json
+download_report.csv
+multi_journal_download_report.csv
+basic_stats.json
+source_papers.ris
+reference_papers.ris
+all_papers/
+classified/
+stats/
+visualization/
