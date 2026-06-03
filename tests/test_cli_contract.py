@@ -34,6 +34,10 @@ def test_cli_classify_papers_arguments():
         r"D:\results",
         "--organize-dir",
         r"D:\papers",
+        "--embedding-model",
+        "specter",
+        "--sentence-model",
+        "allenai-specter",
         "--move",
     ])
 
@@ -41,6 +45,8 @@ def test_cli_classify_papers_arguments():
     assert args.manifest.endswith("article_manifest.json")
     assert args.out_dir.endswith("results")
     assert args.organize_dir.endswith("papers")
+    assert args.embedding_model == "specter"
+    assert args.sentence_model == "allenai-specter"
     assert args.move is True
 
 

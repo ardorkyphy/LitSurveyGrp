@@ -251,6 +251,24 @@ class SentenceTransformerEmbedder:
         return self._model.encode(texts, normalize_embeddings=True)
 
 
+def build_topic_embedder(embedding_model: str = "lsa", sentence_model: str | None = None):
+    """Return the embedding backend requested by CLI/config."""
+    value = (embedding_model or "lsa").lower().strip()
+    if value in {"lsa", "sklearn-lsa", "sklearn_lsa"}:
+        return SklearnLsaEmbedder()
+    if value in {"specter", "sentence-transformer", "sentence_transformer"}:
+        model_name = sentence_model or "allenai-specter"
+        embedder = SentenceTransformerEmbedder(model_name=model_name)
+        embedder.name = f"sentence_transformer:{model_name}"
+        if not embedder.can_embed():
+            raise RuntimeError(
+                "SPECTER requires sentence-transformers. Install it with "
+                "`python -m pip install sentence-transformers`."
+            )
+        return embedder
+    raise ValueError(f"unsupported embedding model: {embedding_model}")
+
+
 class ClusteredPaperClassifier:
     """Batch classifier that derives topic labels from unsupervised clustering."""
 
@@ -499,13 +517,19 @@ class PaperClassificationService:
         clean: bool = True,
         output_dir: Path | None = None,
         organize_dir: Path | None = None,
+        embedding_model: str = "lsa",
+        sentence_model: str | None = None,
     ):
         self.manifest_path = Path(manifest_path)
         self.root_dir = Path(output_dir) if output_dir else self.manifest_path.parent
         self.organize_dir = Path(organize_dir) if organize_dir else self.root_dir
+        self.embedding_model = embedding_model
+        self.sentence_model = sentence_model
         self.copy_files = copy_files
         self.clean = clean
-        self.classifier = ClusteredPaperClassifier()
+        self.classifier = ClusteredPaperClassifier(
+            embedder=build_topic_embedder(embedding_model, sentence_model)
+        )
         self.organizer = PaperFolderOrganizer(self.organize_dir, copy_files=copy_files, clean=clean)
         self.stats = BasicStatsWriter(self.root_dir)
 
@@ -539,6 +563,8 @@ def run_from_args(args) -> int:
         copy_files=not args.move,
         output_dir=Path(args.out_dir) if getattr(args, "out_dir", None) else None,
         organize_dir=Path(args.organize_dir) if getattr(args, "organize_dir", None) else None,
+        embedding_model=getattr(args, "embedding_model", "lsa"),
+        sentence_model=getattr(args, "sentence_model", None),
     )
     service.run()
     return 0

@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from refchaser.paper_classifier import (
     BasicStatsWriter,
     ClusteredPaperClassifier,
@@ -11,6 +13,7 @@ from refchaser.paper_classifier import (
     RuleBasedPaperClassifier,
     SentenceTransformerEmbedder,
     SklearnLsaEmbedder,
+    build_topic_embedder,
     run_from_args,
 )
 from refchaser.paper_models import ArticleRecord
@@ -113,6 +116,26 @@ def test_clustered_classifier_accepts_injected_semantic_embedder():
 def test_embedding_implementations_report_availability():
     assert SklearnLsaEmbedder().can_embed() is True
     assert SentenceTransformerEmbedder().can_embed() in {True, False}
+
+
+def test_build_topic_embedder_returns_lsa_backend():
+    embedder = build_topic_embedder("lsa")
+
+    assert isinstance(embedder, SklearnLsaEmbedder)
+
+
+def test_build_topic_embedder_rejects_unknown_backend():
+    with pytest.raises(ValueError, match="unsupported embedding model"):
+        build_topic_embedder("unknown")
+
+
+def test_build_topic_embedder_requires_sentence_transformers_when_specter_unavailable():
+    if SentenceTransformerEmbedder().can_embed():
+        embedder = build_topic_embedder("specter", "allenai-specter")
+        assert "allenai-specter" in embedder.name
+        return
+    with pytest.raises(RuntimeError, match="sentence-transformers"):
+        build_topic_embedder("specter", "allenai-specter")
 
 
 def test_clustered_classifier_does_not_use_rule_templates_by_default():
@@ -260,6 +283,7 @@ def test_classification_service_wires_components(tmp_path):
         copy_files=False,
         output_dir=tmp_path / "results",
         organize_dir=tmp_path / "papers",
+        embedding_model="lsa",
     )
 
     assert service.manifest_path == manifest
@@ -308,6 +332,8 @@ def test_classification_cli_adapter_runs(monkeypatch, tmp_path):
         move = False
         out_dir = str(tmp_path / "results")
         organize_dir = str(tmp_path / "papers")
+        embedding_model = "lsa"
+        sentence_model = None
 
     monkeypatch.setattr(PaperClassificationService, "run", lambda self: [])
 

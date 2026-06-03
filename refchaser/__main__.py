@@ -33,6 +33,8 @@ def build_parser():
     classify.add_argument("--move", action="store_true", help="move PDFs instead of copying")
     classify.add_argument("--out-dir", help="directory to save classified_manifest.json and basic_stats.json")
     classify.add_argument("--organize-dir", help="directory where PDFs should be organized into classified folders")
+    classify.add_argument("--embedding-model", choices=["lsa", "specter"], default="lsa", help="topic embedding backend")
+    classify.add_argument("--sentence-model", help="sentence-transformers model name, e.g. allenai-specter")
 
     export_ris = subparsers.add_parser("export-ris", help="export manifest or cited references to RIS")
     export_ris.add_argument("--manifest", required=True)
