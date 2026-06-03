@@ -9,9 +9,26 @@ from refchaser.paper_classifier import (
     PaperClassificationService,
     PaperFolderOrganizer,
     RuleBasedPaperClassifier,
+    SentenceTransformerEmbedder,
+    SklearnLsaEmbedder,
     run_from_args,
 )
 from refchaser.paper_models import ArticleRecord
+
+
+class FakeEmbedder:
+    name = "fake_semantic"
+
+    def can_embed(self):
+        return True
+
+    def embed(self, texts):
+        return [
+            [1.0, 0.0],
+            [0.95, 0.05],
+            [0.0, 1.0],
+            [0.05, 0.95],
+        ][: len(texts)]
 
 
 def test_default_subdomain_rules_cover_mvp_categories():
@@ -73,7 +90,29 @@ def test_clustered_classifier_groups_low_confidence_related_articles():
 
     assert classified[0].subdomain == classified[1].subdomain
     assert classified[0].subdomain.startswith("Topic_")
-    assert "auto_cluster=" in classified[0].classification_reason or "auto_cluster=" in classified[1].classification_reason
+    assert "embedding=sklearn_lsa" in classified[0].classification_reason or "embedding=sklearn_lsa" in classified[1].classification_reason
+
+
+def test_clustered_classifier_accepts_injected_semantic_embedder():
+    classifier = ClusteredPaperClassifier(embedder=FakeEmbedder(), max_cluster_count=2)
+    articles = [
+        ArticleRecord(title="APOE Alzheimer biomarker", abstract="Alzheimer biomarker proteomics"),
+        ArticleRecord(title="MRI Alzheimer outcome", abstract="Alzheimer imaging biomarker"),
+        ArticleRecord(title="Peroxisome lipid metabolism", abstract="Metabolic organelle lipid function"),
+        ArticleRecord(title="Muscle stem cell metabolism", abstract="Stem cell metabolic function"),
+    ]
+
+    classified = classifier.classify_batch(articles)
+
+    assert classified[0].subdomain == classified[1].subdomain
+    assert classified[2].subdomain == classified[3].subdomain
+    assert classified[0].subdomain != classified[2].subdomain
+    assert all("embedding=fake_semantic" in article.classification_reason for article in classified)
+
+
+def test_embedding_implementations_report_availability():
+    assert SklearnLsaEmbedder().can_embed() is True
+    assert SentenceTransformerEmbedder().can_embed() in {True, False}
 
 
 def test_clustered_classifier_does_not_use_rule_templates_by_default():

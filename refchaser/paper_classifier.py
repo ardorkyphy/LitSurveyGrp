@@ -2,9 +2,10 @@
 """
 Paper topic clustering and folder organization.
 
-The production batch classifier uses local, deterministic TF-IDF clustering
-and derives topic labels from article text. Rule-based profiles remain as a
-fallback utility for environments where clustering is unavailable.
+The production batch classifier builds semantic document embeddings, clusters
+those embeddings, and derives topic labels from article text. Rule-based
+profiles remain as a fallback utility for environments where clustering is
+unavailable.
 """
 
 import json
@@ -17,9 +18,18 @@ from pathlib import Path
 try:
     from sklearn.cluster import AgglomerativeClustering
     from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.preprocessing import normalize
 except ImportError:  # pragma: no cover - optional dependency fallback
     AgglomerativeClustering = None
     TfidfVectorizer = None
+    TruncatedSVD = None
+    normalize = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:  # pragma: no cover - optional dependency fallback
+    SentenceTransformer = None
 
 from refchaser.paper_models import ArticleRecord
 
@@ -189,6 +199,58 @@ class RuleBasedPaperClassifier:
         return min(0.99, 0.45 + (margin / (best_score + 1.0)) * 0.55)
 
 
+class SklearnLsaEmbedder:
+    """Build local semantic embeddings with TF-IDF followed by LSA/SVD."""
+
+    name = "sklearn_lsa"
+
+    def __init__(self, max_features: int = 3000, ngram_range: tuple[int, int] = (1, 2)):
+        self.max_features = max_features
+        self.ngram_range = ngram_range
+
+    def can_embed(self) -> bool:
+        return TfidfVectorizer is not None and TruncatedSVD is not None and normalize is not None
+
+    def embed(self, texts: list[str]):
+        if not self.can_embed():
+            raise RuntimeError("scikit-learn LSA embedding dependencies are unavailable")
+        vectorizer = TfidfVectorizer(
+            lowercase=True,
+            stop_words="english",
+            ngram_range=self.ngram_range,
+            min_df=1,
+            max_features=self.max_features,
+        )
+        matrix = vectorizer.fit_transform(texts)
+        if matrix.shape[1] == 0:
+            return matrix.toarray()
+        component_count = min(max(2, len(texts) - 1), matrix.shape[1] - 1)
+        if component_count < 2:
+            return normalize(matrix.toarray())
+        reduced = TruncatedSVD(n_components=component_count, random_state=42).fit_transform(matrix)
+        return normalize(reduced)
+
+
+class SentenceTransformerEmbedder:
+    """Build scientific-paper embeddings with a sentence-transformers model."""
+
+    name = "sentence_transformer"
+
+    def __init__(self, model_name: str = "allenai-specter"):
+        self.model_name = model_name
+        self._model = None
+
+    def can_embed(self) -> bool:
+        return SentenceTransformer is not None
+
+    def embed(self, texts: list[str]):
+        if not self.can_embed():
+            raise RuntimeError("sentence-transformers is unavailable")
+        if self._model is None:
+            self._model = SentenceTransformer(self.model_name)
+        return self._model.encode(texts, normalize_embeddings=True)
+
+
 class ClusteredPaperClassifier:
     """Batch classifier that derives topic labels from unsupervised clustering."""
 
@@ -200,6 +262,7 @@ class ClusteredPaperClassifier:
         auto_label_clusters: bool = True,
         fallback_to_rules: bool = False,
         max_cluster_count: int = 8,
+        embedder=None,
     ):
         self.base_classifier = base_classifier or RuleBasedPaperClassifier()
         self.distance_threshold = distance_threshold
@@ -207,6 +270,7 @@ class ClusteredPaperClassifier:
         self.auto_label_clusters = auto_label_clusters
         self.fallback_to_rules = fallback_to_rules
         self.max_cluster_count = max_cluster_count
+        self.embedder = embedder or SklearnLsaEmbedder()
 
     def classify_batch(self, articles: list[ArticleRecord]) -> list[ArticleRecord]:
         """Classify articles using cluster-level labels when enough text exists."""
@@ -237,23 +301,16 @@ class ClusteredPaperClassifier:
                 article.subdomain = cluster_label
                 article.classification_confidence = confidence
                 article.classification_reason = (
-                    f"auto_cluster={label}; keywords: {', '.join(keywords[:8])}"
+                    f"auto_cluster={label}; embedding={self.embedder.name}; keywords: {', '.join(keywords[:8])}"
                 )
         return classified
 
     def _can_cluster(self) -> bool:
-        return AgglomerativeClustering is not None and TfidfVectorizer is not None
+        return AgglomerativeClustering is not None and self.embedder.can_embed()
 
     def _cluster_labels(self, texts: list[str]) -> list[int]:
-        vectorizer = TfidfVectorizer(
-            lowercase=True,
-            stop_words="english",
-            ngram_range=(1, 2),
-            min_df=1,
-            max_features=1500,
-        )
-        matrix = vectorizer.fit_transform(texts)
-        if matrix.shape[1] == 0:
+        embeddings = self.embedder.embed(texts)
+        if len(embeddings) == 0 or len(embeddings[0]) == 0:
             return [-1 for _ in texts]
         cluster_count = self._auto_cluster_count(len(texts))
         if cluster_count <= 1:
@@ -263,7 +320,7 @@ class ClusteredPaperClassifier:
             metric="cosine",
             linkage="average",
         )
-        return list(clustering.fit_predict(matrix.toarray()))
+        return list(clustering.fit_predict(embeddings))
 
     def _auto_cluster_count(self, article_count: int) -> int:
         if article_count <= 0:
