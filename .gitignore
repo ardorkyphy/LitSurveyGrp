@@ -21,6 +21,8 @@ dist/
 .env.*
 
 # Refchaser generated outputs
+papers/
+results/
 article_manifest.json
 multi_journal_manifest.json
 classified_manifest.json

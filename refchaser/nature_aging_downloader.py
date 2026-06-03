@@ -27,8 +27,17 @@ class NatureAgingCrawler:
     JOURNAL_SLUG = "nataging"
     LISTING_URL = "https://www.nature.com/nataging/research-articles"
 
-    def __init__(self, year: int | None = None, limit: int | None = None, session=None):
+    def __init__(
+        self,
+        year: int | None = None,
+        limit: int | None = None,
+        session=None,
+        from_year: int | None = None,
+        to_year: int | None = None,
+    ):
         self.year = year
+        self.from_year = from_year
+        self.to_year = to_year
         self.limit = limit
         self.journal_slug = self.JOURNAL_SLUG
         self.session = session or requests.Session()
@@ -37,6 +46,14 @@ class NatureAgingCrawler:
         """Return listing/search URLs that should be crawled."""
         if self.year:
             return [f"{self.LISTING_URL}?year={self.year}"]
+        if self.from_year or self.to_year:
+            start = self.from_year or self.to_year
+            end = self.to_year or self.from_year
+            if start is None or end is None:
+                return [self.LISTING_URL]
+            if start > end:
+                start, end = end, start
+            return [f"{self.LISTING_URL}?year={year}" for year in range(end, start - 1, -1)]
         return [self.LISTING_URL]
 
     def fetch_listing(self, url: str) -> str:
@@ -197,8 +214,10 @@ class NatureJournalCrawler(NatureAgingCrawler):
         year: int | None = None,
         limit: int | None = None,
         session=None,
+        from_year: int | None = None,
+        to_year: int | None = None,
     ):
-        super().__init__(year=year, limit=limit, session=session)
+        super().__init__(year=year, limit=limit, session=session, from_year=from_year, to_year=to_year)
         self.JOURNAL = journal_name
         self.journal_name = journal_name
         self.journal_slug = journal_slug.strip("/")

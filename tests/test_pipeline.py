@@ -12,7 +12,7 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     calls = []
 
     def fake_download(self):
-        calls.append(("download", self.output_dir, self.results_dir, self.journals, self.limit))
+        calls.append(("download", self.output_dir, self.results_dir, self.journals, self.limit, self.article_filter))
         self.results_dir.mkdir(parents=True, exist_ok=True)
         article = ArticleRecord(title="Aging paper", doi="10.1/test")
         (self.results_dir / "article_manifest.json").write_text(
@@ -58,8 +58,15 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
         papers_dir=tmp_path / "papers",
         results_dir=tmp_path / "results",
         journal_specs=["nature-aging"],
-        year=2026,
+        from_year=2024,
+        to_year=2026,
         limit=50,
+        keywords=["senescence", "immune"],
+        article_types=["Article"],
+        min_citations=2,
+        authors=["Alice"],
+        institutions=["Institute"],
+        filter_sources=["openalex"],
         request_interval=1.0,
         top_n=12,
     )
@@ -77,6 +84,13 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     assert calls[0][1].name == "papers"
     assert calls[0][2].name == "results"
     assert calls[0][4] == 50
+    assert calls[0][5].keywords == ["senescence", "immune"]
+    assert calls[0][5].article_types == ["Article"]
+    assert calls[0][5].min_citations == 2
+    assert calls[0][5].from_year == 2024
+    assert calls[0][5].to_year == 2026
+    assert calls[0][5].authors == ["Alice"]
+    assert calls[0][5].institutions == ["Institute"]
     assert calls[1][3] == ["openalex", "semantic-scholar", "europe-pmc", "crossref"]
     assert calls[2][4] == "allenai-specter"
     assert calls[3][2].name == "stats"
@@ -138,11 +152,19 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         results_dir = str(tmp_path / "results")
         journal = ["nature-aging"]
         year = 2026
+        from_year = 2024
+        to_year = 2026
         limit = 5
         per_journal_limit = 20
         download_timeout = 7
         pdf_only_candidates = True
         dry_run = True
+        keyword = ["aging", "senescence"]
+        article_type = ["Article"]
+        min_citations = 10
+        author = ["Alice"]
+        institution = ["Institute"]
+        filter_sources = ["openalex", "crossref"]
         skip_enrichment = False
         sources = ["openalex", "crossref"]
         metadata_timeout = 8
@@ -162,6 +184,8 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         captured["results_dir"] = self.results_dir
         captured["journal_specs"] = self.journal_specs
         captured["limit"] = self.limit
+        captured["article_filter"] = self.article_filter
+        captured["filter_sources"] = self.filter_sources
         captured["request_interval"] = self.request_interval
         captured["metadata_sources"] = self.metadata_sources
         captured["clean_existing"] = self.clean_existing
@@ -174,6 +198,12 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
     assert captured["results_dir"].name == "results"
     assert captured["journal_specs"] == ["nature-aging"]
     assert captured["limit"] == 5
+    assert captured["article_filter"].keywords == ["aging", "senescence"]
+    assert captured["article_filter"].article_types == ["Article"]
+    assert captured["article_filter"].min_citations == 10
+    assert captured["article_filter"].authors == ["Alice"]
+    assert captured["article_filter"].institutions == ["Institute"]
+    assert captured["filter_sources"] == ["openalex", "crossref"]
     assert captured["request_interval"] == 1.5
     assert captured["metadata_sources"] == ["openalex", "crossref"]
     assert captured["clean_existing"] is True

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import requests
 
+from refchaser.filters import ArticleFilter
 from refchaser.nature_aging_downloader import NatureJournalCrawler
 from refchaser.paper_models import ArticleRecord
 from refchaser.pdf_utils import PdfDownloader
@@ -55,11 +56,22 @@ class CrossrefJournalProvider:
 
     API_BASE = "https://api.crossref.org/v1"
 
-    def __init__(self, config: JournalConfig, year: int | None = None, limit: int | None = None, timeout: int = 15, session=None):
+    def __init__(
+        self,
+        config: JournalConfig,
+        year: int | None = None,
+        limit: int | None = None,
+        timeout: int = 15,
+        session=None,
+        from_year: int | None = None,
+        to_year: int | None = None,
+    ):
         if not config.issn:
             raise ValueError("crossref journal config requires issn")
         self.config = config
         self.year = year
+        self.from_year = from_year
+        self.to_year = to_year
         self.limit = limit
         self.timeout = timeout
         self.session = session or requests.Session()
@@ -80,6 +92,11 @@ class CrossrefJournalProvider:
         filters = ["type:journal-article"]
         if self.year:
             filters.extend([f"from-pub-date:{self.year}-01-01", f"until-pub-date:{self.year}-12-31"])
+        else:
+            if self.from_year:
+                filters.append(f"from-pub-date:{self.from_year}-01-01")
+            if self.to_year:
+                filters.append(f"until-pub-date:{self.to_year}-12-31")
         return {
             "rows": min(self.limit or 20, 100),
             "sort": "published",
@@ -142,11 +159,22 @@ class OpenAlexJournalProvider:
 
     API_URL = "https://api.openalex.org/works"
 
-    def __init__(self, config: JournalConfig, year: int | None = None, limit: int | None = None, timeout: int = 15, session=None):
+    def __init__(
+        self,
+        config: JournalConfig,
+        year: int | None = None,
+        limit: int | None = None,
+        timeout: int = 15,
+        session=None,
+        from_year: int | None = None,
+        to_year: int | None = None,
+    ):
         if not config.issn:
             raise ValueError("openalex journal config requires issn")
         self.config = config
         self.year = year
+        self.from_year = from_year
+        self.to_year = to_year
         self.limit = limit
         self.timeout = timeout
         self.session = session or requests.Session()
@@ -165,6 +193,11 @@ class OpenAlexJournalProvider:
         ]
         if self.year:
             filters.extend([f"from_publication_date:{self.year}-01-01", f"to_publication_date:{self.year}-12-31"])
+        else:
+            if self.from_year:
+                filters.append(f"from_publication_date:{self.from_year}-01-01")
+            if self.to_year:
+                filters.append(f"to_publication_date:{self.to_year}-12-31")
         return {
             "filter": ",".join(filters),
             "sort": "publication_date:desc",
@@ -232,11 +265,17 @@ class MultiJournalDownloadService:
         results_dir: Path | None = None,
         download_timeout: int = 15,
         pdf_only_candidates: bool = False,
+        article_filter: ArticleFilter | None = None,
+        prefilter_enricher=None,
+        from_year: int | None = None,
+        to_year: int | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.results_dir = Path(results_dir) if results_dir else self.output_dir
         self.journals = journals
         self.year = year
+        self.from_year = from_year
+        self.to_year = to_year
         self.limit = limit
         self.per_journal_limit = per_journal_limit
         self.dry_run = dry_run
@@ -244,6 +283,8 @@ class MultiJournalDownloadService:
         self.report_name = report_name
         self.download_timeout = download_timeout
         self.pdf_only_candidates = pdf_only_candidates
+        self.article_filter = article_filter
+        self.prefilter_enricher = prefilter_enricher
         self.downloader = PdfDownloader(self.output_dir, timeout=download_timeout)
 
     def run(self) -> list[ArticleRecord]:
@@ -252,6 +293,9 @@ class MultiJournalDownloadService:
         articles = []
         complete_count = 0
         for article in self.iter_articles():
+            article = self.prepare_article_for_filtering(article)
+            if self.article_filter and not self.article_filter.matches(article):
+                continue
             if self.pdf_only_candidates and not article.pdf_url:
                 article.download_status = "skipped"
                 article.pdf_status = "missing_pdf_url"
@@ -272,6 +316,17 @@ class MultiJournalDownloadService:
         self.write_report(articles)
         return articles
 
+    def prepare_article_for_filtering(self, article: ArticleRecord) -> ArticleRecord:
+        """Enrich fields needed by filters before deciding whether to download."""
+        if (
+            self.article_filter
+            and self.article_filter.needs_citation_count()
+            and article.citation_count is None
+            and self.prefilter_enricher is not None
+        ):
+            return self.prefilter_enricher.enrich_article(article)
+        return article
+
     def iter_articles(self):
         """Yield discovered articles from each configured journal."""
         for journal in self.journals:
@@ -289,9 +344,23 @@ class MultiJournalDownloadService:
     def build_source(self, journal: JournalConfig):
         """Create a source provider for one journal config."""
         if journal.provider == "crossref":
-            return CrossrefJournalProvider(journal, year=self.year, limit=self.per_journal_limit, timeout=self.download_timeout)
+            return CrossrefJournalProvider(
+                journal,
+                year=self.year,
+                limit=self.per_journal_limit,
+                timeout=self.download_timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            )
         if journal.provider == "openalex":
-            return OpenAlexJournalProvider(journal, year=self.year, limit=self.per_journal_limit, timeout=self.download_timeout)
+            return OpenAlexJournalProvider(
+                journal,
+                year=self.year,
+                limit=self.per_journal_limit,
+                timeout=self.download_timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            )
         if journal.provider != "nature":
             raise ValueError(f"unsupported journal provider: {journal.provider}")
         return NatureJournalCrawler(
@@ -299,6 +368,8 @@ class MultiJournalDownloadService:
             journal_slug=journal.slug,
             article_id_prefix=journal.article_id_prefix,
             year=self.year,
+            from_year=self.from_year,
+            to_year=self.to_year,
         )
 
     def write_manifest(self, articles: list[ArticleRecord]) -> Path:
@@ -396,12 +467,16 @@ def run_from_args(args) -> int:
         output_dir=Path(args.to),
         journals=parse_journal_specs(args.journal),
         year=args.year,
+        from_year=getattr(args, "from_year", None),
+        to_year=getattr(args, "to_year", None),
         limit=args.limit,
         per_journal_limit=args.per_journal_limit,
         dry_run=args.dry_run,
         results_dir=Path(args.results_dir) if getattr(args, "results_dir", None) else None,
         download_timeout=getattr(args, "download_timeout", 15),
         pdf_only_candidates=getattr(args, "pdf_only_candidates", False),
+        article_filter=build_article_filter_from_args(args),
+        prefilter_enricher=build_prefilter_enricher_from_args(args),
     )
     service.run()
     return 0
@@ -413,14 +488,45 @@ def run_nature_aging_from_args(args) -> int:
         output_dir=Path(args.to),
         journals=[SUPPORTED_JOURNALS["nature-aging"]],
         year=args.year,
+        from_year=getattr(args, "from_year", None),
+        to_year=getattr(args, "to_year", None),
         limit=args.limit,
         per_journal_limit=None,
         dry_run=args.dry_run,
         results_dir=Path(args.results_dir) if getattr(args, "results_dir", None) else None,
         download_timeout=getattr(args, "download_timeout", 15),
         pdf_only_candidates=getattr(args, "pdf_only_candidates", False),
+        article_filter=build_article_filter_from_args(args),
+        prefilter_enricher=build_prefilter_enricher_from_args(args),
         manifest_name="article_manifest.json",
         report_name="download_report.csv",
     )
     service.run()
     return 0
+
+
+def build_article_filter_from_args(args) -> ArticleFilter | None:
+    article_filter = ArticleFilter(
+        keywords=list(getattr(args, "keyword", None) or []),
+        article_types=list(getattr(args, "article_type", None) or []),
+        min_citations=getattr(args, "min_citations", None),
+        year=getattr(args, "year", None),
+        from_year=getattr(args, "from_year", None),
+        to_year=getattr(args, "to_year", None),
+        authors=list(getattr(args, "author", None) or []),
+        institutions=list(getattr(args, "institution", None) or []),
+    )
+    return article_filter if article_filter.has_criteria() else None
+
+
+def build_prefilter_enricher_from_args(args):
+    if getattr(args, "min_citations", None) is None:
+        return None
+    from refchaser.enrichment.metadata_enrichment import MetadataEnrichmentService
+
+    return MetadataEnrichmentService(
+        "article_prefilter.json",
+        sources=list(getattr(args, "filter_sources", None) or ["openalex", "crossref"]),
+        timeout=getattr(args, "metadata_timeout", getattr(args, "download_timeout", 15)),
+        request_interval=getattr(args, "request_interval", 1.0),
+    )

@@ -16,6 +16,7 @@ from refchaser.multi_journal_downloader import (
     run_nature_aging_from_args,
     run_from_args,
 )
+from refchaser.filters import ArticleFilter
 from refchaser.nature_aging_downloader import NatureJournalCrawler
 from refchaser.paper_models import ArticleRecord
 from refchaser.pdf_utils import PdfDownloader
@@ -186,6 +187,16 @@ def test_crossref_provider_discovers_article_records():
     assert session.calls[0][1]["params"]["filter"] == "type:journal-article,from-pub-date:2026-01-01,until-pub-date:2026-12-31"
 
 
+def test_crossref_provider_builds_year_range_filter():
+    provider = CrossrefJournalProvider(
+        JournalConfig("Science", provider="crossref", issn="0036-8075"),
+        from_year=2022,
+        to_year=2024,
+    )
+
+    assert provider.build_params()["filter"] == "type:journal-article,from-pub-date:2022-01-01,until-pub-date:2024-12-31"
+
+
 def test_openalex_provider_discovers_article_records():
     data = {
         "results": [
@@ -225,6 +236,19 @@ def test_openalex_provider_discovers_article_records():
     assert articles[0].pdf_url == "https://example.org/open.pdf"
     assert articles[0].citation_count == 12
     assert session.calls[0][1]["params"]["filter"] == "primary_location.source.issn:0920-5691,type:article,from_publication_date:2026-01-01,to_publication_date:2026-12-31"
+
+
+def test_openalex_provider_builds_year_range_filter():
+    provider = OpenAlexJournalProvider(
+        JournalConfig("IJCV", provider="openalex", issn="0920-5691"),
+        from_year=2022,
+        to_year=2024,
+    )
+
+    assert provider.build_params()["filter"] == (
+        "primary_location.source.issn:0920-5691,type:article,"
+        "from_publication_date:2022-01-01,to_publication_date:2024-12-31"
+    )
 
 
 def test_openalex_provider_does_not_treat_doi_page_as_pdf():
@@ -358,21 +382,86 @@ def test_multi_journal_service_can_skip_non_pdf_candidates(tmp_path):
     assert processed[1].download_status == "downloaded"
 
 
+def test_multi_journal_service_filters_before_download_and_manifest(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Nature Aging", "nataging")],
+        dry_run=True,
+        article_filter=ArticleFilter(keywords=["senescence"], article_types=["article"], from_year=2024, to_year=2026),
+    )
+    service.iter_articles = lambda: iter([
+        ArticleRecord(title="Senescence atlas", abstract="Cellular senescence.", article_type="Article", publish_date="2025/01/01"),
+        ArticleRecord(title="Metabolism atlas", abstract="Mitochondrial metabolism.", article_type="Article", publish_date="2025/01/01"),
+        ArticleRecord(title="Senescence news", abstract="Cellular senescence.", article_type="News", publish_date="2025/01/01"),
+    ])
+
+    processed = service.run()
+    saved = json.loads((tmp_path / "multi_journal_manifest.json").read_text(encoding="utf-8"))
+
+    assert [article.title for article in processed] == ["Senescence atlas"]
+    assert [item["title"] for item in saved] == ["Senescence atlas"]
+
+
+def test_multi_journal_service_can_enrich_citations_before_filtering(tmp_path):
+    class FakeEnricher:
+        def enrich_article(self, article):
+            article.citation_count = 12 if article.title == "High citation paper" else 2
+            article.citation_source = "openalex"
+            return article
+
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Nature Aging", "nataging")],
+        dry_run=True,
+        article_filter=ArticleFilter(min_citations=10),
+        prefilter_enricher=FakeEnricher(),
+    )
+    service.iter_articles = lambda: iter([
+        ArticleRecord(title="Low citation paper"),
+        ArticleRecord(title="High citation paper"),
+    ])
+
+    processed = service.run()
+
+    assert [article.title for article in processed] == ["High citation paper"]
+    assert processed[0].citation_count == 12
+
+
 def test_multi_journal_cli_adapter_runs(monkeypatch, tmp_path):
     class Args:
         to = str(tmp_path / "papers")
         results_dir = str(tmp_path / "results")
         journal = ["nature-aging"]
         year = 2026
+        from_year = None
+        to_year = None
         limit = 1
         per_journal_limit = 2
         download_timeout = 7
         pdf_only_candidates = False
         dry_run = True
+        keyword = ["aging"]
+        article_type = ["Article"]
+        min_citations = 3
+        author = ["Alice"]
+        institution = ["Institute"]
+        filter_sources = ["openalex"]
+        metadata_timeout = 7
 
-    monkeypatch.setattr(MultiJournalDownloadService, "run", lambda self: [])
+    captured = {}
+
+    def fake_run(self):
+        captured["article_filter"] = self.article_filter
+        captured["prefilter_enricher"] = self.prefilter_enricher
+        return []
+
+    monkeypatch.setattr(MultiJournalDownloadService, "run", fake_run)
 
     assert run_from_args(Args()) == 0
+    assert captured["article_filter"].keywords == ["aging"]
+    assert captured["article_filter"].article_types == ["Article"]
+    assert captured["article_filter"].min_citations == 3
+    assert captured["prefilter_enricher"] is not None
 
 
 def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_path):
@@ -380,10 +469,19 @@ def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_pat
         to = str(tmp_path / "papers")
         results_dir = str(tmp_path / "results")
         year = 2026
+        from_year = None
+        to_year = None
         limit = 1
         dry_run = True
         download_timeout = 15
         pdf_only_candidates = False
+        keyword = []
+        article_type = []
+        min_citations = None
+        author = []
+        institution = []
+        filter_sources = None
+        metadata_timeout = 15
 
     captured = {}
 

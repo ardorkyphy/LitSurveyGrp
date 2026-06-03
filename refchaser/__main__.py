@@ -7,6 +7,7 @@ def build_parser():
 
     download = subparsers.add_parser("download-nature-aging", help="download Nature Aging papers")
     download.add_argument("--year", type=int)
+    add_article_filter_arguments(download)
     download.add_argument("--to", required=True, help="directory to save papers and reports")
     download.add_argument("--results-dir", help="directory to save manifests and reports")
     download.add_argument("--limit", type=int)
@@ -17,6 +18,7 @@ def build_parser():
     download_journals = subparsers.add_parser("download-journals", help="download papers from configured journals")
     download_journals.add_argument("--journal", action="append", required=True, help="journal key or custom spec, e.g. nature-aging or 'Nature Aging=nataging:s43587-'")
     download_journals.add_argument("--year", type=int)
+    add_article_filter_arguments(download_journals)
     download_journals.add_argument("--to", required=True, help="directory to save papers and reports")
     download_journals.add_argument("--results-dir", help="directory to save manifests and reports")
     download_journals.add_argument("--limit", type=int, help="maximum number of complete PDFs across all journals")
@@ -67,6 +69,7 @@ def build_parser():
     pipeline = subparsers.add_parser("run-survey", help="run download, enrichment, classification, stats, and visualization")
     pipeline.add_argument("--journal", action="append", help="journal key or custom spec; defaults to nature-aging")
     pipeline.add_argument("--year", type=int)
+    add_article_filter_arguments(pipeline)
     pipeline.add_argument("--limit", type=int, help="maximum number of complete PDFs across all journals")
     pipeline.add_argument("--per-journal-limit", type=int, help="maximum discovered articles per journal")
     pipeline.add_argument("--papers-dir", default="papers", help="directory to save PDFs and classified folders")
@@ -87,6 +90,22 @@ def build_parser():
     pipeline.add_argument("--skip-visualization", action="store_true")
 
     return parser
+
+
+def add_article_filter_arguments(parser):
+    parser.add_argument("--from-year", type=int, help="earliest publication year to keep")
+    parser.add_argument("--to-year", type=int, help="latest publication year to keep")
+    parser.add_argument("--keyword", action="append", help="required keyword; all provided keywords must match title/abstract/type")
+    parser.add_argument("--article-type", action="append", help="article type to keep, e.g. Article or Review")
+    parser.add_argument("--min-citations", type=int, help="minimum citation count to keep before download")
+    parser.add_argument("--author", action="append", help="author name fragment to keep")
+    parser.add_argument("--institution", action="append", help="institution name fragment to keep")
+    parser.add_argument(
+        "--filter-sources",
+        nargs="+",
+        choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"],
+        help="metadata sources used only for citation-threshold prefiltering",
+    )
 
 
 def main():

@@ -11,6 +11,7 @@ from refchaser.enrichment.metadata_enrichment import (
     DEFAULT_SOURCES,
     MetadataEnrichmentService,
 )
+from refchaser.filters import ArticleFilter
 from refchaser.multi_journal_downloader import MultiJournalDownloadService, parse_journal_specs
 from refchaser.paper_classifier import PaperClassificationService
 from refchaser.research_stats import ResearchStatsWriter
@@ -59,11 +60,19 @@ class SurveyPipelineService:
         results_dir: Path,
         journal_specs: list[str] | None = None,
         year: int | None = None,
+        from_year: int | None = None,
+        to_year: int | None = None,
         limit: int | None = None,
         per_journal_limit: int | None = None,
         download_timeout: int = 15,
         pdf_only_candidates: bool = False,
         dry_run: bool = False,
+        keywords: list[str] | None = None,
+        article_types: list[str] | None = None,
+        min_citations: int | None = None,
+        authors: list[str] | None = None,
+        institutions: list[str] | None = None,
+        filter_sources: list[str] | None = None,
         enrich_metadata: bool = True,
         metadata_sources: list[str] | None = None,
         metadata_timeout: int = 15,
@@ -81,11 +90,24 @@ class SurveyPipelineService:
         self.results_dir = Path(results_dir)
         self.journal_specs = journal_specs or ["nature-aging"]
         self.year = year
+        self.from_year = from_year
+        self.to_year = to_year
         self.limit = limit
         self.per_journal_limit = per_journal_limit
         self.download_timeout = download_timeout
         self.pdf_only_candidates = pdf_only_candidates
         self.dry_run = dry_run
+        self.article_filter = ArticleFilter(
+            keywords=list(keywords or []),
+            article_types=list(article_types or []),
+            min_citations=min_citations,
+            year=year,
+            from_year=from_year,
+            to_year=to_year,
+            authors=list(authors or []),
+            institutions=list(institutions or []),
+        )
+        self.filter_sources = filter_sources
         self.enrich_metadata = enrich_metadata
         self.metadata_sources = metadata_sources
         self.metadata_timeout = metadata_timeout
@@ -136,6 +158,8 @@ class SurveyPipelineService:
             results_dir=self.results_dir,
             journals=parse_journal_specs(self.journal_specs),
             year=self.year,
+            from_year=self.from_year,
+            to_year=self.to_year,
             limit=self.limit,
             per_journal_limit=self.per_journal_limit,
             dry_run=self.dry_run,
@@ -143,9 +167,21 @@ class SurveyPipelineService:
             report_name=outputs.download_report.name,
             download_timeout=self.download_timeout,
             pdf_only_candidates=self.pdf_only_candidates,
+            article_filter=self.article_filter if self.article_filter.has_criteria() else None,
+            prefilter_enricher=self.build_prefilter_enricher(),
         )
         service.run()
         return outputs.download_manifest
+
+    def build_prefilter_enricher(self):
+        if not self.article_filter.needs_citation_count():
+            return None
+        return MetadataEnrichmentService(
+            self.results_dir / "article_prefilter.json",
+            sources=self.filter_sources or ["openalex", "crossref"],
+            timeout=self.metadata_timeout,
+            request_interval=self.request_interval,
+        )
 
     def _enrich(self, manifest: Path, outputs: SurveyPipelineOutputs) -> Path:
         outputs.enriched_manifest = self.results_dir / "enriched_manifest.json"
@@ -175,8 +211,18 @@ class SurveyPipelineService:
         report = outputs.to_dict()
         report["journals"] = list(self.journal_specs)
         report["year"] = self.year
+        report["from_year"] = self.from_year
+        report["to_year"] = self.to_year
         report["limit"] = self.limit
         report["per_journal_limit"] = self.per_journal_limit
+        report["filters"] = {
+            "keywords": list(self.article_filter.keywords),
+            "article_types": list(self.article_filter.article_types),
+            "min_citations": self.article_filter.min_citations,
+            "authors": list(self.article_filter.authors),
+            "institutions": list(self.article_filter.institutions),
+            "filter_sources": list(self.filter_sources or ["openalex", "crossref"]),
+        }
         report["metadata_sources"] = self.metadata_sources or list(DEFAULT_SOURCES)
         report["request_interval"] = self.request_interval
         report["steps"] = {
@@ -208,11 +254,19 @@ def run_from_args(args) -> int:
         results_dir=Path(args.results_dir),
         journal_specs=getattr(args, "journal", None),
         year=getattr(args, "year", None),
+        from_year=getattr(args, "from_year", None),
+        to_year=getattr(args, "to_year", None),
         limit=getattr(args, "limit", None),
         per_journal_limit=getattr(args, "per_journal_limit", None),
         download_timeout=getattr(args, "download_timeout", 15),
         pdf_only_candidates=getattr(args, "pdf_only_candidates", False),
         dry_run=getattr(args, "dry_run", False),
+        keywords=getattr(args, "keyword", None),
+        article_types=getattr(args, "article_type", None),
+        min_citations=getattr(args, "min_citations", None),
+        authors=getattr(args, "author", None),
+        institutions=getattr(args, "institution", None),
+        filter_sources=getattr(args, "filter_sources", None),
         enrich_metadata=not getattr(args, "skip_enrichment", False),
         metadata_sources=getattr(args, "sources", None),
         metadata_timeout=getattr(args, "metadata_timeout", 15),

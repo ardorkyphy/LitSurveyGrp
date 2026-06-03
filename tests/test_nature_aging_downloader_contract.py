@@ -81,6 +81,16 @@ def test_build_listing_urls_uses_year_filter():
     assert crawler.build_listing_urls() == ["https://www.nature.com/nataging/research-articles?year=2026"]
 
 
+def test_build_listing_urls_uses_year_range_newest_first():
+    crawler = NatureAgingCrawler(from_year=2024, to_year=2026)
+
+    assert crawler.build_listing_urls() == [
+        "https://www.nature.com/nataging/research-articles?year=2026",
+        "https://www.nature.com/nataging/research-articles?year=2025",
+        "https://www.nature.com/nataging/research-articles?year=2024",
+    ]
+
+
 def test_parse_listing_extracts_article_urls_and_skips_pdf_links():
     crawler = NatureAgingCrawler(limit=10)
 
