@@ -280,13 +280,11 @@ class MultiJournalDownloadService:
                 yield from source.discover()
                 continue
             yielded = 0
-            for listing_url in source.build_listing_urls():
-                article_urls = source.parse_listing(source.fetch_listing(listing_url))
-                for article_url in article_urls:
-                    if self.per_journal_limit and yielded >= self.per_journal_limit:
-                        break
-                    yielded += 1
-                    yield source.parse_article_detail(source.fetch_article_detail(article_url), article_url)
+            for article_url in source.iter_article_urls():
+                if self.per_journal_limit and yielded >= self.per_journal_limit:
+                    break
+                yielded += 1
+                yield source.parse_article_detail(source.fetch_article_detail(article_url), article_url)
 
     def build_source(self, journal: JournalConfig):
         """Create a source provider for one journal config."""
@@ -301,7 +299,6 @@ class MultiJournalDownloadService:
             journal_slug=journal.slug,
             article_id_prefix=journal.article_id_prefix,
             year=self.year,
-            limit=self.per_journal_limit,
         )
 
     def write_manifest(self, articles: list[ArticleRecord]) -> Path:

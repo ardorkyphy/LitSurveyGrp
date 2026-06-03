@@ -18,6 +18,19 @@ LISTING_HTML = """
 </html>
 """
 
+PAGINATED_LISTING_PAGE_ONE = """
+<html>
+  <a href="/articles/s43587-026-01123-0">Article one</a>
+  <a href="/nataging/research-articles?page=2&searchType=journalSearch&sort=PubDate&year=2026" aria-label="Next page">2</a>
+</html>
+"""
+
+PAGINATED_LISTING_PAGE_TWO = """
+<html>
+  <a href="/articles/s43587-026-01124-1">Article two</a>
+</html>
+"""
+
 DETAIL_HTML = """
 <html>
   <head>
@@ -107,6 +120,27 @@ def test_discover_fetches_listing_and_details_with_limit():
 
     assert len(articles) == 1
     assert articles[0].doi == "10.1038/s43587-026-01123-0"
+
+
+def test_discover_follows_nature_pagination_links():
+    first_url = "https://www.nature.com/nataging/research-articles?year=2026"
+    second_url = "https://www.nature.com/nataging/research-articles?page=2&searchType=journalSearch&sort=PubDate&year=2026"
+    session = FakeSession({
+        first_url: PAGINATED_LISTING_PAGE_ONE,
+        second_url: PAGINATED_LISTING_PAGE_TWO,
+        "https://www.nature.com/articles/s43587-026-01123-0": DETAIL_HTML,
+        "https://www.nature.com/articles/s43587-026-01124-1": DETAIL_HTML,
+    })
+    crawler = NatureAgingCrawler(year=2026, session=session)
+
+    articles = crawler.discover()
+
+    assert len(articles) == 2
+    assert session.urls[:2] == [
+        first_url,
+        "https://www.nature.com/articles/s43587-026-01123-0",
+    ]
+    assert second_url in session.urls
 
 
 def test_download_service_wires_crawler_and_downloader(tmp_path):

@@ -10,7 +10,7 @@ import csv
 import json
 import re
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -24,11 +24,13 @@ class NatureAgingCrawler:
 
     JOURNAL = "Nature Aging"
     BASE_URL = "https://www.nature.com"
+    JOURNAL_SLUG = "nataging"
     LISTING_URL = "https://www.nature.com/nataging/research-articles"
 
     def __init__(self, year: int | None = None, limit: int | None = None, session=None):
         self.year = year
         self.limit = limit
+        self.journal_slug = self.JOURNAL_SLUG
         self.session = session or requests.Session()
 
     def build_listing_urls(self) -> list[str]:
@@ -59,6 +61,37 @@ class NatureAgingCrawler:
                 seen.add(full_url)
                 urls.append(full_url)
         return urls
+
+    def parse_next_listing_url(self, html: str, current_url: str) -> str:
+        """Return the next listing page URL when pagination is present."""
+        soup = BeautifulSoup(html, "html.parser")
+        for link in soup.find_all("a", href=True):
+            if not self._looks_like_next_link(link):
+                continue
+            next_url = urljoin(current_url, link["href"].split("#")[0])
+            if self._looks_like_listing_url(next_url):
+                return next_url
+        return ""
+
+    def iter_article_urls(self):
+        """Yield article URLs across all paginated listing pages."""
+        seen_listing_urls = set()
+        seen_article_urls = set()
+        yielded = 0
+        for listing_url in self.build_listing_urls():
+            next_url = listing_url
+            while next_url and next_url not in seen_listing_urls:
+                seen_listing_urls.add(next_url)
+                html = self.fetch_listing(next_url)
+                for article_url in self.parse_listing(html):
+                    if article_url in seen_article_urls:
+                        continue
+                    seen_article_urls.add(article_url)
+                    yield article_url
+                    yielded += 1
+                    if self.limit and yielded >= self.limit:
+                        return
+                next_url = self.parse_next_listing_url(html, next_url)
 
     def fetch_article_detail(self, article_url: str) -> str:
         """Fetch one article detail page and return HTML."""
@@ -101,13 +134,8 @@ class NatureAgingCrawler:
 
     def discover(self) -> list[ArticleRecord]:
         """Return discovered Nature Aging articles."""
-        article_urls = []
-        for listing_url in self.build_listing_urls():
-            article_urls.extend(self.parse_listing(self.fetch_listing(listing_url)))
         articles = []
-        for article_url in article_urls:
-            if self.limit and len(articles) >= self.limit:
-                break
+        for article_url in self.iter_article_urls():
             articles.append(self.parse_article_detail(self.fetch_article_detail(article_url), article_url))
         return articles
 
@@ -138,6 +166,24 @@ class NatureAgingCrawler:
             if href.endswith(".pdf") or "download pdf" in text or text == "pdf":
                 return urljoin(self.BASE_URL, href)
         return article_url.rstrip("/") + ".pdf"
+
+    def _looks_like_next_link(self, link) -> bool:
+        rel_values = [str(item).lower() for item in (link.get("rel") or [])]
+        if "next" in rel_values:
+            return True
+        text = " ".join(link.get_text(" ", strip=True).lower().split())
+        aria = str(link.get("aria-label", "")).lower()
+        title = str(link.get("title", "")).lower()
+        combined = " ".join([text, aria, title])
+        return "next page" in combined or combined.strip() == "next"
+
+    def _looks_like_listing_url(self, url: str) -> bool:
+        parsed = urlparse(url)
+        return (
+            parsed.netloc in {"", urlparse(self.BASE_URL).netloc}
+            and parsed.path.rstrip("/") == f"/{self.journal_slug}/research-articles"
+            and "page=" in parsed.query
+        )
 
 
 class NatureJournalCrawler(NatureAgingCrawler):
@@ -196,7 +242,7 @@ class NatureAgingDownloadService:
         self.year = year
         self.limit = limit
         self.dry_run = dry_run
-        self.crawler = NatureAgingCrawler(year=year, limit=limit)
+        self.crawler = NatureAgingCrawler(year=year)
         self.downloader = PdfDownloader(self.output_dir)
 
     def run(self) -> list[ArticleRecord]:
@@ -221,10 +267,8 @@ class NatureAgingDownloadService:
 
     def _iter_discovered_articles(self):
         """Yield discovered ArticleRecord instances without applying successful-download limit."""
-        for listing_url in self.crawler.build_listing_urls():
-            article_urls = self.crawler.parse_listing(self.crawler.fetch_listing(listing_url))
-            for article_url in article_urls:
-                yield self.crawler.parse_article_detail(self.crawler.fetch_article_detail(article_url), article_url)
+        for article_url in self.crawler.iter_article_urls():
+            yield self.crawler.parse_article_detail(self.crawler.fetch_article_detail(article_url), article_url)
 
     def write_manifest(self, articles: list[ArticleRecord]) -> Path:
         """Write article_manifest.json."""
