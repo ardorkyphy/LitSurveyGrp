@@ -27,27 +27,27 @@ class JournalConfig:
     name: str
     slug: str = ""
     article_id_prefix: str | None = None
-    provider: str = "nature"
+    provider: str = "layered"
     issn: str | None = None
     group: str = "general"
 
 
 SUPPORTED_JOURNALS = {
-    "nature-aging": JournalConfig("Nature Aging", "nataging", "s43587-"),
-    "nature-medicine": JournalConfig("Nature Medicine", "nm", None),
-    "nature-biotechnology": JournalConfig("Nature Biotechnology", "nbt", None),
-    "nature": JournalConfig("Nature", provider="crossref", issn="0028-0836", group="general-top"),
-    "science": JournalConfig("Science", provider="crossref", issn="0036-8075", group="general-top"),
-    "cell": JournalConfig("Cell", provider="openalex", issn="0092-8674", group="life-science-top"),
-    "nejm": JournalConfig("New England Journal of Medicine", provider="crossref", issn="0028-4793", group="medical-top"),
-    "lancet": JournalConfig("The Lancet", provider="crossref", issn="0140-6736", group="medical-top"),
-    "jama": JournalConfig("JAMA", provider="crossref", issn="0098-7484", group="medical-top"),
-    "tpami": JournalConfig("IEEE Transactions on Pattern Analysis and Machine Intelligence", provider="crossref", issn="0162-8828", group="ccf-a-journal"),
-    "ijcv": JournalConfig("International Journal of Computer Vision", provider="openalex", issn="0920-5691", group="ccf-a-journal"),
-    "jacm": JournalConfig("Journal of the ACM", provider="crossref", issn="0004-5411", group="ccf-a-journal"),
-    "tog": JournalConfig("ACM Transactions on Graphics", provider="crossref", issn="0730-0301", group="ccf-a-journal"),
-    "tods": JournalConfig("ACM Transactions on Database Systems", provider="crossref", issn="0362-5915", group="ccf-a-journal"),
-    "tkde": JournalConfig("IEEE Transactions on Knowledge and Data Engineering", provider="crossref", issn="1041-4347", group="ccf-a-journal"),
+    "nature-aging": JournalConfig("Nature Aging", "nataging", "s43587-", issn="2662-8465"),
+    "nature-medicine": JournalConfig("Nature Medicine", "nm", None, issn="1546-170X"),
+    "nature-biotechnology": JournalConfig("Nature Biotechnology", "nbt", None, issn="1546-1696"),
+    "nature": JournalConfig("Nature", issn="0028-0836", group="general-top"),
+    "science": JournalConfig("Science", issn="0036-8075", group="general-top"),
+    "cell": JournalConfig("Cell", issn="0092-8674", group="life-science-top"),
+    "nejm": JournalConfig("New England Journal of Medicine", issn="0028-4793", group="medical-top"),
+    "lancet": JournalConfig("The Lancet", issn="0140-6736", group="medical-top"),
+    "jama": JournalConfig("JAMA", issn="0098-7484", group="medical-top"),
+    "tpami": JournalConfig("IEEE Transactions on Pattern Analysis and Machine Intelligence", issn="0162-8828", group="ccf-a-journal"),
+    "ijcv": JournalConfig("International Journal of Computer Vision", issn="0920-5691", group="ccf-a-journal"),
+    "jacm": JournalConfig("Journal of the ACM", issn="0004-5411", group="ccf-a-journal"),
+    "tog": JournalConfig("ACM Transactions on Graphics", issn="0730-0301", group="ccf-a-journal"),
+    "tods": JournalConfig("ACM Transactions on Database Systems", issn="0362-5915", group="ccf-a-journal"),
+    "tkde": JournalConfig("IEEE Transactions on Knowledge and Data Engineering", issn="1041-4347", group="ccf-a-journal"),
 }
 
 
@@ -249,6 +249,126 @@ class OpenAlexJournalProvider:
         return (doi or "").removeprefix("https://doi.org/").strip()
 
 
+class NatureCrawlerJournalProvider:
+    """Discover journal articles from Nature-family listing pages."""
+
+    def __init__(
+        self,
+        config: JournalConfig,
+        year: int | None = None,
+        limit: int | None = None,
+        timeout: int = 15,
+        from_year: int | None = None,
+        to_year: int | None = None,
+    ):
+        if not config.slug:
+            raise ValueError("nature crawler journal config requires slug")
+        self.config = config
+        self.year = year
+        self.limit = limit
+        self.timeout = timeout
+        self.from_year = from_year
+        self.to_year = to_year
+
+    def discover(self) -> list[ArticleRecord]:
+        crawler = NatureJournalCrawler(
+            journal_name=self.config.name,
+            journal_slug=self.config.slug,
+            article_id_prefix=self.config.article_id_prefix,
+            year=self.year,
+            from_year=self.from_year,
+            to_year=self.to_year,
+        )
+        articles = []
+        for article_url in crawler.iter_article_urls():
+            if self.limit and len(articles) >= self.limit:
+                break
+            articles.append(crawler.parse_article_detail(crawler.fetch_article_detail(article_url), article_url))
+        return articles
+
+
+class LayeredJournalProvider:
+    """Discover articles with OpenAlex first, Crossref second, crawler last."""
+
+    def __init__(
+        self,
+        config: JournalConfig,
+        year: int | None = None,
+        limit: int | None = None,
+        timeout: int = 15,
+        from_year: int | None = None,
+        to_year: int | None = None,
+        provider_factories: list | None = None,
+    ):
+        self.config = config
+        self.year = year
+        self.limit = limit
+        self.timeout = timeout
+        self.from_year = from_year
+        self.to_year = to_year
+        self.provider_factories = provider_factories
+        self.errors: list[str] = []
+
+    def discover(self) -> list[ArticleRecord]:
+        """Return de-duplicated articles from all available provider layers."""
+        articles = []
+        seen = set()
+        for provider in self.build_providers():
+            try:
+                discovered = provider.discover()
+            except Exception as exc:
+                self.errors.append(f"{provider.__class__.__name__}:{exc.__class__.__name__}")
+                continue
+            for article in discovered:
+                key = self.article_key(article)
+                if key in seen:
+                    continue
+                seen.add(key)
+                articles.append(article)
+                if self.limit and len(articles) >= self.limit:
+                    return articles
+        return articles
+
+    def build_providers(self) -> list:
+        if self.provider_factories is not None:
+            return [factory() for factory in self.provider_factories]
+        providers = []
+        if self.config.issn:
+            providers.append(OpenAlexJournalProvider(
+                self.config,
+                year=self.year,
+                limit=self.limit,
+                timeout=self.timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            ))
+            providers.append(CrossrefJournalProvider(
+                self.config,
+                year=self.year,
+                limit=self.limit,
+                timeout=self.timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            ))
+        if self.config.slug:
+            providers.append(NatureCrawlerJournalProvider(
+                self.config,
+                year=self.year,
+                limit=self.limit,
+                timeout=self.timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            ))
+        return providers
+
+    def article_key(self, article: ArticleRecord) -> str:
+        if article.doi:
+            return "doi:" + article.doi.casefold().strip()
+        if article.article_url:
+            return "url:" + article.article_url.casefold().strip()
+        return "title:" + article.title.casefold().strip()
+
+
 class MultiJournalDownloadService:
     """Download complete PDFs across multiple journals using shared PDF logic."""
 
@@ -285,6 +405,7 @@ class MultiJournalDownloadService:
         self.pdf_only_candidates = pdf_only_candidates
         self.article_filter = article_filter
         self.prefilter_enricher = prefilter_enricher
+        self.source_errors: list[str] = []
         self.downloader = PdfDownloader(self.output_dir, timeout=download_timeout)
 
     def run(self) -> list[ArticleRecord]:
@@ -331,15 +452,15 @@ class MultiJournalDownloadService:
         """Yield discovered articles from each configured journal."""
         for journal in self.journals:
             source = self.build_source(journal)
-            if isinstance(source, (CrossrefJournalProvider, OpenAlexJournalProvider)):
-                yield from source.discover()
+            try:
+                articles = source.discover()
+            except Exception as exc:
+                self.source_errors.append(f"{journal.name}:{source.__class__.__name__}:{exc.__class__.__name__}")
                 continue
-            yielded = 0
-            for article_url in source.iter_article_urls():
-                if self.per_journal_limit and yielded >= self.per_journal_limit:
-                    break
-                yielded += 1
-                yield source.parse_article_detail(source.fetch_article_detail(article_url), article_url)
+            if getattr(source, "errors", None):
+                self.source_errors.extend(f"{journal.name}:{error}" for error in source.errors)
+            for article in articles:
+                yield article
 
     def build_source(self, journal: JournalConfig):
         """Create a source provider for one journal config."""
@@ -361,16 +482,26 @@ class MultiJournalDownloadService:
                 from_year=self.from_year,
                 to_year=self.to_year,
             )
+        if journal.provider == "nature":
+            return NatureCrawlerJournalProvider(
+                journal,
+                year=self.year,
+                limit=self.per_journal_limit,
+                timeout=self.download_timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            )
+        if journal.provider == "layered":
+            return LayeredJournalProvider(
+                journal,
+                year=self.year,
+                limit=self.per_journal_limit,
+                timeout=self.download_timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            )
         if journal.provider != "nature":
             raise ValueError(f"unsupported journal provider: {journal.provider}")
-        return NatureJournalCrawler(
-            journal_name=journal.name,
-            journal_slug=journal.slug,
-            article_id_prefix=journal.article_id_prefix,
-            year=self.year,
-            from_year=self.from_year,
-            to_year=self.to_year,
-        )
 
     def write_manifest(self, articles: list[ArticleRecord]) -> Path:
         """Write a JSON manifest."""
@@ -408,9 +539,11 @@ def parse_journal_specs(values: list[str]) -> list[JournalConfig]:
 
     Supported forms:
     - built-in key: nature-aging
+    - custom layered journal by ISSN: "layered:Journal Name=ISSN"
+    - custom Crossref journal: "crossref:Journal Name=ISSN"
+    - custom OpenAlex journal: "openalex:Journal Name=ISSN"
     - custom Nature journal: "Journal Name=slug"
     - custom Nature journal with prefix: "Journal Name=slug:prefix"
-    - custom Crossref journal: "crossref:Journal Name=ISSN"
     """
     configs = []
     for value in values:
@@ -420,15 +553,21 @@ def parse_journal_specs(values: list[str]) -> list[JournalConfig]:
         if spec in SUPPORTED_JOURNALS:
             configs.append(SUPPORTED_JOURNALS[spec])
             continue
-        if spec.startswith("crossref:"):
-            name, issn = _split_name_value(spec.removeprefix("crossref:"))
-            configs.append(JournalConfig(name=name, provider="crossref", issn=issn, group="custom"))
+        provider, prefixed_spec = _split_provider_prefix(spec)
+        if provider in {"crossref", "openalex", "layered"}:
+            name, issn = _split_name_value(prefixed_spec)
+            configs.append(JournalConfig(name=name, provider=provider, issn=issn, group="custom"))
             continue
         if "=" not in spec:
             raise ValueError(f"unknown journal spec: {spec}")
         name, raw_slug = spec.split("=", 1)
         slug, _, prefix = raw_slug.partition(":")
-        configs.append(JournalConfig(name=name.strip(), slug=slug.strip(), article_id_prefix=prefix.strip() or None))
+        configs.append(JournalConfig(
+            name=name.strip(),
+            slug=slug.strip(),
+            article_id_prefix=prefix.strip() or None,
+            provider="nature",
+        ))
     if not configs:
         raise ValueError("at least one journal must be provided")
     return configs
@@ -445,6 +584,13 @@ def _split_name_value(spec: str) -> tuple[str, str]:
     return name, value
 
 
+def _split_provider_prefix(spec: str) -> tuple[str, str]:
+    provider, separator, remainder = spec.partition(":")
+    if separator and provider in {"crossref", "openalex", "layered"}:
+        return provider, remainder
+    return "", spec
+
+
 def list_supported_journals(group: str | None = None) -> list[tuple[str, JournalConfig]]:
     """Return supported journal catalog entries."""
     items = sorted(SUPPORTED_JOURNALS.items())
@@ -456,7 +602,7 @@ def list_supported_journals(group: str | None = None) -> list[tuple[str, Journal
 def run_list_from_args(args) -> int:
     """CLI adapter for python -m refchaser list-journals."""
     for key, config in list_supported_journals(getattr(args, "group", None)):
-        locator = config.issn if config.provider == "crossref" else config.slug
+        locator = config.issn or config.slug
         print(f"{key}\t{config.name}\t{config.provider}\t{locator}\t{config.group}")
     return 0
 

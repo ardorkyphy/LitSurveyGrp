@@ -7,7 +7,9 @@ import pytest
 from refchaser.multi_journal_downloader import (
     CrossrefJournalProvider,
     JournalConfig,
+    LayeredJournalProvider,
     MultiJournalDownloadService,
+    NatureCrawlerJournalProvider,
     OpenAlexJournalProvider,
     SUPPORTED_JOURNALS,
     list_supported_journals,
@@ -53,12 +55,14 @@ def test_supported_journals_contains_nature_aging():
     assert config.name == "Nature Aging"
     assert config.slug == "nataging"
     assert config.article_id_prefix == "s43587-"
+    assert config.provider == "layered"
+    assert config.issn == "2662-8465"
 
 
 def test_supported_journals_contains_crossref_top_and_ccfa_entries():
-    assert SUPPORTED_JOURNALS["science"].provider == "crossref"
+    assert SUPPORTED_JOURNALS["science"].provider == "layered"
     assert SUPPORTED_JOURNALS["science"].issn == "0036-8075"
-    assert SUPPORTED_JOURNALS["ijcv"].provider == "openalex"
+    assert SUPPORTED_JOURNALS["ijcv"].provider == "layered"
     assert SUPPORTED_JOURNALS["tpami"].group == "ccf-a-journal"
 
 
@@ -77,14 +81,22 @@ def test_parse_journal_specs_accepts_builtin_and_custom_specs():
     ])
 
     assert configs[0].name == "Nature Aging"
-    assert configs[1] == JournalConfig("Nature Test", "ntest", "s12345-")
-    assert configs[2] == JournalConfig("Nature Open", "nopen", None)
+    assert configs[1] == JournalConfig("Nature Test", "ntest", "s12345-", provider="nature")
+    assert configs[2] == JournalConfig("Nature Open", "nopen", None, provider="nature")
 
 
-def test_parse_journal_specs_accepts_crossref_custom_spec():
-    configs = parse_journal_specs(["crossref:Test Journal=1234-5678"])
+def test_parse_journal_specs_accepts_api_custom_specs():
+    configs = parse_journal_specs([
+        "crossref:Test Journal=1234-5678",
+        "openalex:Open Journal=1111-2222",
+        "layered:Layered Journal=3333-4444",
+    ])
 
-    assert configs == [JournalConfig("Test Journal", provider="crossref", issn="1234-5678", group="custom")]
+    assert configs == [
+        JournalConfig("Test Journal", provider="crossref", issn="1234-5678", group="custom"),
+        JournalConfig("Open Journal", provider="openalex", issn="1111-2222", group="custom"),
+        JournalConfig("Layered Journal", provider="layered", issn="3333-4444", group="custom"),
+    ]
 
 
 def test_parse_journal_specs_rejects_unknown_key():
@@ -285,6 +297,85 @@ def test_multi_journal_service_builds_openalex_source(tmp_path):
     source = service.build_source(service.journals[0])
 
     assert isinstance(source, OpenAlexJournalProvider)
+
+
+def test_multi_journal_service_builds_layered_source_by_default(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[SUPPORTED_JOURNALS["nature-aging"]],
+        per_journal_limit=3,
+    )
+
+    source = service.build_source(service.journals[0])
+
+    assert isinstance(source, LayeredJournalProvider)
+
+
+def test_multi_journal_service_builds_nature_crawler_source(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Nature Test", "ntest", provider="nature")],
+    )
+
+    source = service.build_source(service.journals[0])
+
+    assert isinstance(source, NatureCrawlerJournalProvider)
+
+
+def test_layered_provider_deduplicates_and_records_provider_errors():
+    class GoodProvider:
+        def __init__(self, articles):
+            self.articles = articles
+
+        def discover(self):
+            return self.articles
+
+    class FailingProvider:
+        def discover(self):
+            raise RuntimeError("boom")
+
+    provider = LayeredJournalProvider(
+        JournalConfig("Layered", provider="layered", issn="1234-5678"),
+        provider_factories=[
+            lambda: GoodProvider([ArticleRecord(title="OpenAlex", doi="10.1/shared")]),
+            lambda: FailingProvider(),
+            lambda: GoodProvider([
+                ArticleRecord(title="Duplicate", doi="10.1/shared"),
+                ArticleRecord(title="Crossref only", doi="10.1/unique"),
+            ]),
+        ],
+    )
+
+    articles = provider.discover()
+
+    assert [article.title for article in articles] == ["OpenAlex", "Crossref only"]
+    assert provider.errors == ["FailingProvider:RuntimeError"]
+
+
+def test_multi_journal_service_continues_when_one_journal_source_fails(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[
+            JournalConfig("Broken", provider="openalex", issn="0000-0000"),
+            JournalConfig("Working", provider="openalex", issn="1111-1111"),
+        ],
+        dry_run=True,
+    )
+
+    class BrokenProvider:
+        def discover(self):
+            raise RuntimeError("broken")
+
+    class WorkingProvider:
+        def discover(self):
+            return [ArticleRecord(title="Working paper", journal="Working")]
+
+    service.build_source = lambda journal: BrokenProvider() if journal.name == "Broken" else WorkingProvider()
+
+    articles = service.run()
+
+    assert [article.title for article in articles] == ["Working paper"]
+    assert service.source_errors == ["Broken:BrokenProvider:RuntimeError"]
 
 
 def test_multi_journal_service_dry_run_marks_articles_and_writes_outputs(tmp_path):
