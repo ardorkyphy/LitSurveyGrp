@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-MVP semantic-profile paper classification and folder organization.
+Paper topic clustering and folder organization.
 
-The classifier is intentionally local and deterministic. It approximates
-semantic classification by scoring each subdomain profile against the title,
-abstract, article type, and method/problem phrases.
+The production batch classifier uses local, deterministic TF-IDF clustering
+and derives topic labels from article text. Rule-based profiles remain as a
+fallback utility for environments where clustering is unavailable.
 """
 
 import json
+import math
 import re
 import shutil
 from collections import Counter, defaultdict
@@ -189,7 +190,7 @@ class RuleBasedPaperClassifier:
 
 
 class ClusteredPaperClassifier:
-    """Batch classifier that combines semantic clustering with profile labels."""
+    """Batch classifier that derives topic labels from unsupervised clustering."""
 
     def __init__(
         self,
@@ -197,39 +198,47 @@ class ClusteredPaperClassifier:
         distance_threshold: float = 0.72,
         min_cluster_size: int = 2,
         auto_label_clusters: bool = True,
+        fallback_to_rules: bool = False,
+        max_cluster_count: int = 8,
     ):
         self.base_classifier = base_classifier or RuleBasedPaperClassifier()
         self.distance_threshold = distance_threshold
         self.min_cluster_size = min_cluster_size
         self.auto_label_clusters = auto_label_clusters
+        self.fallback_to_rules = fallback_to_rules
+        self.max_cluster_count = max_cluster_count
 
     def classify_batch(self, articles: list[ArticleRecord]) -> list[ArticleRecord]:
         """Classify articles using cluster-level labels when enough text exists."""
-        classified = [self.base_classifier.classify(article) for article in articles]
+        classified = list(articles)
+        for article in classified:
+            article.problem_statement = self.base_classifier.infer_problem_statement(article)
+            article.solution_summary = self.base_classifier.infer_solution_summary(article)
         if len(classified) < self.min_cluster_size or not self._can_cluster():
-            return classified
+            return self._fallback_classify(classified, "insufficient records for clustering")
         texts = [self._document_text(article) for article in classified]
         if sum(bool(text.strip()) for text in texts) < self.min_cluster_size:
-            return classified
+            return self._fallback_classify(classified, "insufficient article text for clustering")
         try:
             labels = self._cluster_labels(texts)
         except Exception:
-            return classified
+            return self._fallback_classify(classified, "clustering failed")
         clusters = defaultdict(list)
         for index, label in enumerate(labels):
             clusters[label].append(index)
         for label, indexes in clusters.items():
-            if label == -1 or len(indexes) < self.min_cluster_size:
+            if len(indexes) < self.min_cluster_size:
+                for index in indexes:
+                    self._keyword_classify(classified[index], f"cluster={label}; singleton topic")
                 continue
             cluster_label, confidence, keywords = self._label_cluster([classified[index] for index in indexes])
             for index in indexes:
                 article = classified[index]
-                if self.auto_label_clusters or article.classification_confidence < 0.72 or article.subdomain == "Other":
-                    article.subdomain = cluster_label
-                    article.classification_confidence = max(article.classification_confidence, confidence)
-                    article.classification_reason = (
-                        f"cluster={label}; inherited={cluster_label}; keywords: {', '.join(keywords[:8])}"
-                    )
+                article.subdomain = cluster_label
+                article.classification_confidence = confidence
+                article.classification_reason = (
+                    f"auto_cluster={label}; keywords: {', '.join(keywords[:8])}"
+                )
         return classified
 
     def _can_cluster(self) -> bool:
@@ -246,13 +255,23 @@ class ClusteredPaperClassifier:
         matrix = vectorizer.fit_transform(texts)
         if matrix.shape[1] == 0:
             return [-1 for _ in texts]
+        cluster_count = self._auto_cluster_count(len(texts))
+        if cluster_count <= 1:
+            return [0 for _ in texts]
         clustering = AgglomerativeClustering(
-            n_clusters=None,
+            n_clusters=cluster_count,
             metric="cosine",
             linkage="average",
-            distance_threshold=self.distance_threshold,
         )
         return list(clustering.fit_predict(matrix.toarray()))
+
+    def _auto_cluster_count(self, article_count: int) -> int:
+        if article_count <= 0:
+            return 0
+        if article_count <= self.min_cluster_size:
+            return 1
+        estimated = max(2, math.ceil(math.sqrt(article_count)))
+        return min(article_count, self.max_cluster_count, estimated)
 
     def _label_cluster(self, articles: list[ArticleRecord]) -> tuple[str, float, list[str]]:
         keywords = self._cluster_keywords(articles)
@@ -287,6 +306,7 @@ class ClusteredPaperClassifier:
         stopwords = {
             "paper", "study", "article", "research", "using", "shows", "reveals",
             "science", "nature", "aging", "ageing", "cell", "cells", "human",
+            "from", "with", "this", "that", "into", "both", "disease", "journal",
         }
         if len(token) < 4 or token in stopwords:
             return ""
@@ -315,6 +335,20 @@ class ClusteredPaperClassifier:
             article.article_type,
             article.journal,
         ])
+
+    def _fallback_classify(self, articles: list[ArticleRecord], reason: str) -> list[ArticleRecord]:
+        if self.fallback_to_rules:
+            return [self.base_classifier.classify(article) for article in articles]
+        for article in articles:
+            self._keyword_classify(article, reason)
+        return articles
+
+    def _keyword_classify(self, article: ArticleRecord, reason: str) -> ArticleRecord:
+        keywords = self._cluster_keywords([article])
+        article.subdomain = self._auto_cluster_label(keywords)
+        article.classification_confidence = 0.55 if article.subdomain != "Topic_Other" else 0.0
+        article.classification_reason = f"auto_topic_fallback={reason}; keywords: {', '.join(keywords[:8])}"
+        return article
 
 
 class PaperFolderOrganizer:

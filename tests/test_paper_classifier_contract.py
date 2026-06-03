@@ -73,7 +73,38 @@ def test_clustered_classifier_groups_low_confidence_related_articles():
 
     assert classified[0].subdomain == classified[1].subdomain
     assert classified[0].subdomain.startswith("Topic_")
-    assert "cluster=" in classified[0].classification_reason or "cluster=" in classified[1].classification_reason
+    assert "auto_cluster=" in classified[0].classification_reason or "auto_cluster=" in classified[1].classification_reason
+
+
+def test_clustered_classifier_does_not_use_rule_templates_by_default():
+    classifier = ClusteredPaperClassifier(distance_threshold=0.8)
+    articles = [
+        ArticleRecord(
+            title="Proteomic signatures of APOE variants and Alzheimer progression",
+            abstract="Proteomic biomarkers predict Alzheimer disease progression.",
+        ),
+        ArticleRecord(
+            title="MRI signatures predict cognitive outcomes in Alzheimer disease",
+            abstract="Imaging biomarkers classify future cognitive decline.",
+        ),
+        ArticleRecord(
+            title="Peroxisome metabolism supports muscle stem cell function",
+            abstract="Organelle metabolism and lipid homeostasis regulate aged stem cells.",
+        ),
+    ]
+
+    classified = classifier.classify_batch(articles)
+
+    assert all(article.subdomain.startswith("Topic_") for article in classified)
+    assert not any(article.subdomain in DEFAULT_SUBDOMAIN_RULES for article in classified)
+
+
+def test_clustered_classifier_auto_estimates_cluster_count():
+    classifier = ClusteredPaperClassifier()
+
+    assert classifier._auto_cluster_count(1) == 1
+    assert classifier._auto_cluster_count(10) == 4
+    assert classifier._auto_cluster_count(100) == classifier.max_cluster_count
 
 
 def test_classifier_sets_review_solution_to_none():
@@ -223,10 +254,13 @@ def test_classification_service_loads_classifies_and_writes_outputs(tmp_path):
 
     articles = service.run()
 
-    assert articles[0].subdomain == "Drug_Discovery"
+    assert articles[0].subdomain.startswith("Topic_")
+    assert articles[0].subdomain != "Drug_Discovery"
     assert (results_dir / "classified_manifest.json").exists()
     assert (results_dir / "basic_stats.json").exists()
-    assert (papers_dir / "classified" / "Drug_Discovery" / "paper.pdf").exists()
+    classified_files = list((papers_dir / "classified").rglob("paper.pdf"))
+    assert len(classified_files) == 1
+    assert classified_files[0].parent.name.startswith("Topic_")
 
 
 def test_classification_cli_adapter_runs(monkeypatch, tmp_path):
