@@ -54,7 +54,12 @@ def test_download_classify_extract_and_export_reference_pipeline(monkeypatch, tm
     assert len(downloaded) == 1
     assert manifest.exists()
 
-    classified = PaperClassificationService(manifest).run()
+    classification = PaperClassificationService(manifest)
+    classification.classifier.classify_batch = lambda articles: [
+        setattr(article, "subdomain", "Topic_Semantic_Segmentation") or article
+        for article in articles
+    ]
+    classified = classification.run()
 
     assert classified[0].subdomain
     assert (tmp_path / "classified_manifest.json").exists()

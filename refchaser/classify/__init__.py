@@ -4,17 +4,15 @@
 from refchaser.paper_classifier import (
     BasicStatsWriter,
     ClusteredPaperClassifier,
-    DEFAULT_SUBDOMAIN_RULES,
     PaperClassificationService,
     PaperFolderOrganizer,
-    RuleBasedPaperClassifier,
+    SentenceTransformerEmbedder,
 )
 
 __all__ = [
     "BasicStatsWriter",
     "ClusteredPaperClassifier",
-    "DEFAULT_SUBDOMAIN_RULES",
     "PaperClassificationService",
     "PaperFolderOrganizer",
-    "RuleBasedPaperClassifier",
+    "SentenceTransformerEmbedder",
 ]

@@ -15,9 +15,7 @@ setuptools.setup(
     long_description_content_type='text/markdown',
     url='https://github.com/DQ-Zhang/refchaser.git',
     packages=setuptools.find_packages(),
-    extras_require={
-        "specter": ["sentence-transformers"],
-    },
+    install_requires=["sentence-transformers"],
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",
