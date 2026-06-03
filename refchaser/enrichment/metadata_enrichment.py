@@ -8,6 +8,7 @@ and records where citation counts and abstracts came from.
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -29,9 +30,10 @@ class OpenAlexMetadataResolver:
     name = "openalex"
     API_BASE = "https://api.openalex.org/works"
 
-    def __init__(self, session=None, timeout: int = 15):
+    def __init__(self, session=None, timeout: int = 15, api_key: str | None = None):
         self.session = session or requests.Session()
         self.timeout = timeout
+        self.api_key = api_key or os.environ.get("OPENALEX_API_KEY", "")
 
     def resolve(self, article: ArticleRecord) -> dict:
         data = self._fetch(article)
@@ -53,6 +55,7 @@ class OpenAlexMetadataResolver:
         if article.doi:
             response = self.session.get(
                 f"{self.API_BASE}/doi:{quote(clean_doi(article.doi), safe='')}",
+                params=self.auth_params(),
                 timeout=self.timeout,
             )
             if response.status_code == 404:
@@ -63,11 +66,17 @@ class OpenAlexMetadataResolver:
             return {}
         response = self.session.get(
             self.API_BASE,
-            params={"search": article.title, "per-page": 1},
+            params=self.auth_params({"search": article.title, "per-page": 1}),
             timeout=self.timeout,
         )
         response.raise_for_status()
         return first((response.json().get("results") or []), {})
+
+    def auth_params(self, params: dict | None = None) -> dict:
+        params = dict(params or {})
+        if self.api_key:
+            params["api_key"] = self.api_key
+        return params
 
     def _authors(self, data: dict) -> list[str]:
         return dedupe([
@@ -231,6 +240,7 @@ class MetadataEnrichmentService:
         monotonic_func=None,
     ):
         self.manifest_path = Path(manifest_path)
+        load_local_env(self.manifest_path.parent)
         self.output_path = Path(output_path) if output_path else self.manifest_path.parent / "enriched_manifest.json"
         self.sources = sources or list(DEFAULT_SOURCES)
         self.timeout = timeout
@@ -443,6 +453,32 @@ def int_or_none(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def load_local_env(start_dir: Path | None = None) -> None:
+    """Load simple KEY=VALUE lines from a local .env file without overwriting env vars."""
+    search_dirs = []
+    if start_dir:
+        search_dirs.extend([Path(start_dir), *Path(start_dir).parents])
+    search_dirs.extend([Path.cwd(), *Path.cwd().parents])
+    seen = set()
+    for directory in search_dirs:
+        env_path = directory / ".env"
+        if env_path in seen:
+            continue
+        seen.add(env_path)
+        if not env_path.exists():
+            continue
+        for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        return
 
 
 def run_from_args(args) -> int:

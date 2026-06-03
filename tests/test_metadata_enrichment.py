@@ -7,6 +7,7 @@ from refchaser.enrichment.metadata_enrichment import (
     DEFAULT_REQUEST_INTERVAL_SECONDS,
     MetadataEnrichmentService,
     OpenAlexMetadataResolver,
+    load_local_env,
     openalex_abstract,
     run_from_args,
 )
@@ -64,7 +65,7 @@ def test_openalex_resolver_parses_core_metadata():
             }
         ],
     })
-    resolver = OpenAlexMetadataResolver(session=session)
+    resolver = OpenAlexMetadataResolver(session=session, api_key="test-key")
 
     metadata = resolver.resolve(ArticleRecord(title="Local title", doi="10.1038/test"))
 
@@ -76,6 +77,29 @@ def test_openalex_resolver_parses_core_metadata():
     assert metadata["abstract"] == "Aging biology"
     assert metadata["citation_count"] == 42
     assert "doi:10.1038%2Ftest" in session.calls[0][0]
+    assert session.calls[0][1]["params"]["api_key"] == "test-key"
+
+
+def test_openalex_resolver_adds_api_key_to_title_search():
+    session = FakeSession({"results": []})
+    resolver = OpenAlexMetadataResolver(session=session, api_key="test-key")
+
+    resolver.resolve(ArticleRecord(title="Aging paper"))
+
+    assert session.calls[0][1]["params"]["api_key"] == "test-key"
+    assert session.calls[0][1]["params"]["search"] == "Aging paper"
+
+
+def test_load_local_env_reads_dotenv_without_overwriting(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENALEX_API_KEY=from-file\nEXISTING_KEY=from-file\n", encoding="utf-8")
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+    monkeypatch.setenv("EXISTING_KEY", "already-set")
+
+    load_local_env(tmp_path)
+
+    assert __import__("os").environ["OPENALEX_API_KEY"] == "from-file"
+    assert __import__("os").environ["EXISTING_KEY"] == "already-set"
 
 
 def test_crossref_resolver_parses_citation_count_and_abstract():
