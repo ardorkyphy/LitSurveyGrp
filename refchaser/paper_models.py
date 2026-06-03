@@ -95,6 +95,8 @@ class ArticleRecord:
     solution_summary: Optional[str] = None
     citation_count: Optional[int] = None
     citation_source: str = ""
+    citation_counts: dict[str, int] = field(default_factory=dict)
+    citation_policy: str = ""
     abstract_source: str = ""
     metadata_sources: list[str] = field(default_factory=list)
     enrichment_status: str = ""
@@ -125,6 +127,8 @@ class ArticleRecord:
             "solution_summary": self.solution_summary,
             "citation_count": self.citation_count,
             "citation_source": self.citation_source,
+            "citation_counts": dict(self.citation_counts),
+            "citation_policy": self.citation_policy,
             "abstract_source": self.abstract_source,
             "metadata_sources": list(self.metadata_sources),
             "enrichment_status": self.enrichment_status,
@@ -159,6 +163,8 @@ class ArticleRecord:
             solution_summary=data.get("solution_summary"),
             citation_count=data.get("citation_count"),
             citation_source=data.get("citation_source", ""),
+            citation_counts=dict(data.get("citation_counts") or {}),
+            citation_policy=data.get("citation_policy", ""),
             abstract_source=data.get("abstract_source", ""),
             metadata_sources=list(data.get("metadata_sources") or []),
             enrichment_status=data.get("enrichment_status", ""),

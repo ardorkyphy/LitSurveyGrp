@@ -20,6 +20,8 @@ def test_article_record_defaults_are_mvp_contract():
     assert article.references == []
     assert article.solution_summary is None
     assert article.citation_source == ""
+    assert article.citation_counts == {}
+    assert article.citation_policy == ""
     assert article.abstract_source == ""
     assert article.metadata_sources == []
     assert article.enrichment_status == ""
@@ -54,6 +56,8 @@ def test_article_record_manifest_round_trip_with_path():
         pdf_status="complete",
         citation_count=23,
         citation_source="openalex",
+        citation_counts={"openalex": 23, "crossref": 7},
+        citation_policy="max_available",
         abstract_source="semantic-scholar",
         metadata_sources=["openalex", "semantic-scholar"],
         enrichment_status="enriched",
@@ -83,6 +87,8 @@ def test_article_record_manifest_round_trip_with_path():
     assert restored.pdf_status == "complete"
     assert restored.citation_count == 23
     assert restored.citation_source == "openalex"
+    assert restored.citation_counts == {"openalex": 23, "crossref": 7}
+    assert restored.citation_policy == "max_available"
     assert restored.abstract_source == "semantic-scholar"
     assert restored.metadata_sources == ["openalex", "semantic-scholar"]
     assert restored.enrichment_status == "enriched"

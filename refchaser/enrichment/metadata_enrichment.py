@@ -19,7 +19,8 @@ from refchaser.paper_models import ArticleRecord
 
 
 DEFAULT_SOURCES = ["openalex", "semantic-scholar", "europe-pmc", "crossref"]
-DEFAULT_REQUEST_INTERVAL_SECONDS = 3.0
+DEFAULT_REQUEST_INTERVAL_SECONDS = 1.0
+CITATION_POLICY_MAX_AVAILABLE = "max_available"
 
 
 class OpenAlexMetadataResolver:
@@ -323,11 +324,44 @@ class MetadataEnrichmentService:
             article.abstract = metadata["abstract"]
             article.abstract_source = source
             changed = True
-        if metadata.get("citation_count") is not None and (article.citation_count is None or not article.citation_source):
-            article.citation_count = int(metadata["citation_count"])
-            article.citation_source = source
-            changed = True
+        if metadata.get("citation_count") is not None:
+            changed = self.merge_citation_count(article, int(metadata["citation_count"]), source) or changed
         return changed
+
+    def merge_citation_count(self, article: ArticleRecord, citation_count: int, source: str) -> bool:
+        previous = dict(article.citation_counts)
+        article.citation_counts[source] = citation_count
+        best_source, best_count = self.best_citation_count(article.citation_counts)
+        old_count = article.citation_count
+        old_source = article.citation_source
+        old_policy = article.citation_policy
+        article.citation_count = best_count
+        article.citation_source = best_source
+        article.citation_policy = CITATION_POLICY_MAX_AVAILABLE
+        return (
+            previous != article.citation_counts
+            or old_count != article.citation_count
+            or old_source != article.citation_source
+            or old_policy != article.citation_policy
+        )
+
+    def best_citation_count(self, citation_counts: dict[str, int]) -> tuple[str, int | None]:
+        if not citation_counts:
+            return "", None
+        best_source, best_count = max(
+            citation_counts.items(),
+            key=lambda item: (int(item[1]), self.citation_source_priority(item[0])),
+        )
+        return best_source, int(best_count)
+
+    def citation_source_priority(self, source: str) -> int:
+        priority = {
+            "semantic-scholar": 4,
+            "openalex": 3,
+            "europe-pmc": 2,
+            "crossref": 1,
+        }
+        return priority.get(source, 0)
 
     def _clean_metadata(self, metadata: dict | None) -> dict:
         metadata = metadata or {}

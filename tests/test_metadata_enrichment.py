@@ -115,8 +115,8 @@ def test_metadata_enrichment_service_merges_sources_and_writes_manifest(tmp_path
     service = MetadataEnrichmentService(
         manifest,
         resolvers=[
-            FakeResolver("openalex", {"citation_count": 11, "journal": "Nature Aging"}),
-            FakeResolver("semantic-scholar", {"abstract": "Semantic Scholar abstract.", "authors": ["Alice"]}),
+            FakeResolver("openalex", {"citation_count": 0, "journal": "Nature Aging"}),
+            FakeResolver("semantic-scholar", {"citation_count": 11, "abstract": "Semantic Scholar abstract.", "authors": ["Alice"]}),
         ],
         request_interval=0,
     )
@@ -126,13 +126,16 @@ def test_metadata_enrichment_service_merges_sources_and_writes_manifest(tmp_path
 
     assert enriched[0].journal == "Nature Aging"
     assert enriched[0].citation_count == 11
-    assert enriched[0].citation_source == "openalex"
+    assert enriched[0].citation_source == "semantic-scholar"
+    assert enriched[0].citation_counts == {"openalex": 0, "semantic-scholar": 11}
+    assert enriched[0].citation_policy == "max_available"
     assert enriched[0].abstract == "Semantic Scholar abstract."
     assert enriched[0].abstract_source == "semantic-scholar"
     assert enriched[0].authors == ["Alice"]
     assert enriched[0].metadata_sources == ["openalex", "semantic-scholar"]
     assert enriched[0].enrichment_status == "enriched"
-    assert saved[0]["citation_source"] == "openalex"
+    assert saved[0]["citation_source"] == "semantic-scholar"
+    assert saved[0]["citation_counts"] == {"openalex": 0, "semantic-scholar": 11}
 
 
 def test_metadata_enrichment_service_keeps_existing_abstract_source_priority():
@@ -174,7 +177,7 @@ def test_metadata_enrichment_cli_adapter_runs(monkeypatch, tmp_path):
     assert captured["request_interval"] == 5.0
 
 
-def test_metadata_enrichment_default_request_interval_is_three_seconds():
+def test_metadata_enrichment_default_request_interval_is_one_second():
     service = MetadataEnrichmentService("manifest.json", resolvers=[], sleep_func=lambda seconds: None)
 
     assert service.request_interval == DEFAULT_REQUEST_INTERVAL_SECONDS
@@ -222,3 +225,21 @@ def test_metadata_enrichment_service_can_disable_throttle_for_tests():
     service.enrich_article(ArticleRecord(title="Paper"))
 
     assert sleeps == []
+
+
+def test_metadata_enrichment_tie_breaks_citation_sources_by_priority():
+    service = MetadataEnrichmentService("manifest.json", resolvers=[], request_interval=0)
+    article = ArticleRecord(title="Paper")
+
+    service.merge_citation_count(article, 5, "crossref")
+    service.merge_citation_count(article, 5, "openalex")
+    service.merge_citation_count(article, 5, "semantic-scholar")
+
+    assert article.citation_count == 5
+    assert article.citation_source == "semantic-scholar"
+    assert article.citation_counts == {
+        "crossref": 5,
+        "openalex": 5,
+        "semantic-scholar": 5,
+    }
+    assert article.citation_policy == "max_available"
