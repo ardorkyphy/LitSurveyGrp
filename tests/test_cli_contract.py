@@ -123,3 +123,36 @@ def test_cli_visualize_arguments():
     assert args.manifest.endswith("enriched_manifest.json")
     assert args.out_dir.endswith("visualization")
     assert args.top == 8
+
+
+def test_cli_run_survey_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "run-survey",
+        "--journal",
+        "nature-aging",
+        "--year",
+        "2026",
+        "--limit",
+        "50",
+        "--papers-dir",
+        r"D:\中文路径\papers",
+        "--results-dir",
+        r"D:\中文路径\results",
+        "--sources",
+        "openalex",
+        "crossref",
+        "--request-interval",
+        "1.5",
+        "--clean-existing",
+    ])
+
+    assert args.command == "run-survey"
+    assert args.journal == ["nature-aging"]
+    assert args.year == 2026
+    assert args.limit == 50
+    assert args.papers_dir.endswith("papers")
+    assert args.results_dir.endswith("results")
+    assert args.sources == ["openalex", "crossref"]
+    assert args.request_interval == 1.5
+    assert args.clean_existing is True

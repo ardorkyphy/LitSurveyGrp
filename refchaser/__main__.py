@@ -64,6 +64,28 @@ def build_parser():
     visualize.add_argument("--out-dir")
     visualize.add_argument("--top", type=int, default=15)
 
+    pipeline = subparsers.add_parser("run-survey", help="run download, enrichment, classification, stats, and visualization")
+    pipeline.add_argument("--journal", action="append", help="journal key or custom spec; defaults to nature-aging")
+    pipeline.add_argument("--year", type=int)
+    pipeline.add_argument("--limit", type=int, help="maximum number of complete PDFs across all journals")
+    pipeline.add_argument("--per-journal-limit", type=int, help="maximum discovered articles per journal")
+    pipeline.add_argument("--papers-dir", default="papers", help="directory to save PDFs and classified folders")
+    pipeline.add_argument("--results-dir", default="results", help="directory to save manifests, reports, stats, and visualization")
+    pipeline.add_argument("--download-timeout", type=int, default=15, help="network timeout in seconds for metadata and PDF requests")
+    pipeline.add_argument("--pdf-only-candidates", action="store_true", help="skip records unless the provider supplied a direct PDF URL")
+    pipeline.add_argument("--dry-run", action="store_true")
+    pipeline.add_argument("--sources", nargs="+", choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"])
+    pipeline.add_argument("--metadata-timeout", type=int, default=15)
+    pipeline.add_argument("--request-interval", type=float, default=1.0, help="minimum seconds between metadata API calls")
+    pipeline.add_argument("--sentence-model", default="allenai-specter", help="SPECTER sentence-transformers model name")
+    pipeline.add_argument("--top", type=int, default=20)
+    pipeline.add_argument("--move", action="store_true", help="move PDFs into classified folders instead of copying")
+    pipeline.add_argument("--clean-existing", action="store_true", help="remove existing papers/results directories before running")
+    pipeline.add_argument("--skip-enrichment", action="store_true")
+    pipeline.add_argument("--skip-classification", action="store_true")
+    pipeline.add_argument("--skip-stats", action="store_true")
+    pipeline.add_argument("--skip-visualization", action="store_true")
+
     return parser
 
 
@@ -97,6 +119,9 @@ def main():
         return run_from_args(args)
     if args.command == "visualize":
         from refchaser.visualization import run_from_args
+        return run_from_args(args)
+    if args.command == "run-survey":
+        from refchaser.pipeline import run_from_args
         return run_from_args(args)
 
     parser.print_help()
