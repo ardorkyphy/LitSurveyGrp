@@ -264,8 +264,10 @@ def test_multi_journal_service_builds_openalex_source(tmp_path):
 
 
 def test_multi_journal_service_dry_run_marks_articles_and_writes_outputs(tmp_path):
+    results_dir = tmp_path / "results"
     service = MultiJournalDownloadService(
-        output_dir=tmp_path,
+        output_dir=tmp_path / "papers",
+        results_dir=results_dir,
         journals=[JournalConfig("Nature Aging", "nataging", "s43587-")],
         dry_run=True,
     )
@@ -275,13 +277,14 @@ def test_multi_journal_service_dry_run_marks_articles_and_writes_outputs(tmp_pat
     ])
 
     articles = service.run()
-    manifest = tmp_path / "multi_journal_manifest.json"
-    report = tmp_path / "multi_journal_download_report.csv"
+    manifest = results_dir / "multi_journal_manifest.json"
+    report = results_dir / "multi_journal_download_report.csv"
     data = json.loads(manifest.read_text(encoding="utf-8"))
 
     assert [article.download_status for article in articles] == ["dry_run", "dry_run"]
     assert manifest.exists()
     assert report.exists()
+    assert not (tmp_path / "papers" / "multi_journal_manifest.json").exists()
     assert data[1]["journal"] == "Nature Medicine"
 
 
@@ -357,7 +360,8 @@ def test_multi_journal_service_can_skip_non_pdf_candidates(tmp_path):
 
 def test_multi_journal_cli_adapter_runs(monkeypatch, tmp_path):
     class Args:
-        to = str(tmp_path)
+        to = str(tmp_path / "papers")
+        results_dir = str(tmp_path / "results")
         journal = ["nature-aging"]
         year = 2026
         limit = 1
@@ -373,7 +377,8 @@ def test_multi_journal_cli_adapter_runs(monkeypatch, tmp_path):
 
 def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_path):
     class Args:
-        to = str(tmp_path)
+        to = str(tmp_path / "papers")
+        results_dir = str(tmp_path / "results")
         year = 2026
         limit = 1
         dry_run = True
@@ -383,6 +388,8 @@ def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_pat
     captured = {}
 
     def fake_run(self):
+        captured["output_dir"] = self.output_dir
+        captured["results_dir"] = self.results_dir
         captured["journals"] = self.journals
         captured["manifest_name"] = self.manifest_name
         captured["report_name"] = self.report_name
@@ -391,6 +398,8 @@ def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_pat
     monkeypatch.setattr(MultiJournalDownloadService, "run", fake_run)
 
     assert run_nature_aging_from_args(Args()) == 0
+    assert captured["output_dir"].name == "papers"
+    assert captured["results_dir"].name == "results"
     assert captured["journals"] == [SUPPORTED_JOURNALS["nature-aging"]]
     assert captured["manifest_name"] == "article_manifest.json"
     assert captured["report_name"] == "download_report.csv"

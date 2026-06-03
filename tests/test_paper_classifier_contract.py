@@ -185,10 +185,16 @@ def test_basic_stats_writer_counts_and_ranks(tmp_path):
 
 def test_classification_service_wires_components(tmp_path):
     manifest = tmp_path / "article_manifest.json"
-    service = PaperClassificationService(manifest, copy_files=False)
+    service = PaperClassificationService(
+        manifest,
+        copy_files=False,
+        output_dir=tmp_path / "results",
+        organize_dir=tmp_path / "papers",
+    )
 
     assert service.manifest_path == manifest
-    assert service.root_dir == tmp_path
+    assert service.root_dir == tmp_path / "results"
+    assert service.organize_dir == tmp_path / "papers"
     assert service.copy_files is False
     assert service.clean is True
     assert isinstance(service.classifier, ClusteredPaperClassifier)
@@ -197,9 +203,13 @@ def test_classification_service_wires_components(tmp_path):
 
 
 def test_classification_service_loads_classifies_and_writes_outputs(tmp_path):
-    pdf = tmp_path / "paper.pdf"
+    papers_dir = tmp_path / "papers"
+    results_dir = tmp_path / "results"
+    pdf = papers_dir / "all_papers" / "paper.pdf"
+    pdf.parent.mkdir(parents=True)
     pdf.write_bytes(b"%PDF- test")
-    manifest = tmp_path / "article_manifest.json"
+    manifest = results_dir / "article_manifest.json"
+    results_dir.mkdir()
     article = ArticleRecord(
         title="Compound treatment for aging",
         doi="10.1/test",
@@ -209,20 +219,22 @@ def test_classification_service_loads_classifies_and_writes_outputs(tmp_path):
         institutions=["Institute A"],
     )
     manifest.write_text(json.dumps([article.to_manifest_dict()], ensure_ascii=False), encoding="utf-8")
-    service = PaperClassificationService(manifest)
+    service = PaperClassificationService(manifest, output_dir=results_dir, organize_dir=papers_dir)
 
     articles = service.run()
 
     assert articles[0].subdomain == "Drug_Discovery"
-    assert (tmp_path / "classified_manifest.json").exists()
-    assert (tmp_path / "basic_stats.json").exists()
-    assert (tmp_path / "classified" / "Drug_Discovery" / "paper.pdf").exists()
+    assert (results_dir / "classified_manifest.json").exists()
+    assert (results_dir / "basic_stats.json").exists()
+    assert (papers_dir / "classified" / "Drug_Discovery" / "paper.pdf").exists()
 
 
 def test_classification_cli_adapter_runs(monkeypatch, tmp_path):
     class Args:
         manifest = str(tmp_path / "article_manifest.json")
         move = False
+        out_dir = str(tmp_path / "results")
+        organize_dir = str(tmp_path / "papers")
 
     monkeypatch.setattr(PaperClassificationService, "run", lambda self: [])
 

@@ -5,20 +5,42 @@ from refchaser.__main__ import build_parser
 
 def test_cli_has_mvp_subcommands():
     parser = build_parser()
-    args = parser.parse_args(["download-nature-aging", "--to", r"D:\中文路径", "--year", "2026", "--limit", "3"])
+    args = parser.parse_args([
+        "download-nature-aging",
+        "--to",
+        r"D:\中文路径\papers",
+        "--results-dir",
+        r"D:\中文路径\results",
+        "--year",
+        "2026",
+        "--limit",
+        "3",
+    ])
 
     assert args.command == "download-nature-aging"
-    assert args.to == r"D:\中文路径"
+    assert args.to == r"D:\中文路径\papers"
+    assert args.results_dir == r"D:\中文路径\results"
     assert args.year == 2026
     assert args.limit == 3
 
 
 def test_cli_classify_papers_arguments():
     parser = build_parser()
-    args = parser.parse_args(["classify-papers", "--manifest", r"D:\papers\article_manifest.json", "--move"])
+    args = parser.parse_args([
+        "classify-papers",
+        "--manifest",
+        r"D:\results\article_manifest.json",
+        "--out-dir",
+        r"D:\results",
+        "--organize-dir",
+        r"D:\papers",
+        "--move",
+    ])
 
     assert args.command == "classify-papers"
     assert args.manifest.endswith("article_manifest.json")
+    assert args.out_dir.endswith("results")
+    assert args.organize_dir.endswith("papers")
     assert args.move is True
 
 

@@ -401,13 +401,21 @@ class BasicStatsWriter:
 class PaperClassificationService:
     """CLI-level service for classify-papers."""
 
-    def __init__(self, manifest_path: Path, copy_files: bool = True, clean: bool = True):
+    def __init__(
+        self,
+        manifest_path: Path,
+        copy_files: bool = True,
+        clean: bool = True,
+        output_dir: Path | None = None,
+        organize_dir: Path | None = None,
+    ):
         self.manifest_path = Path(manifest_path)
-        self.root_dir = self.manifest_path.parent
+        self.root_dir = Path(output_dir) if output_dir else self.manifest_path.parent
+        self.organize_dir = Path(organize_dir) if organize_dir else self.root_dir
         self.copy_files = copy_files
         self.clean = clean
         self.classifier = ClusteredPaperClassifier()
-        self.organizer = PaperFolderOrganizer(self.root_dir, copy_files=copy_files, clean=clean)
+        self.organizer = PaperFolderOrganizer(self.organize_dir, copy_files=copy_files, clean=clean)
         self.stats = BasicStatsWriter(self.root_dir)
 
     def run(self) -> list[ArticleRecord]:
@@ -426,6 +434,7 @@ class PaperClassificationService:
 
     def write_classified_manifest(self, articles: list[ArticleRecord]) -> Path:
         """Write classified_manifest.json."""
+        self.root_dir.mkdir(parents=True, exist_ok=True)
         path = self.root_dir / "classified_manifest.json"
         with open(path, "w", encoding="utf-8") as handle:
             json.dump([article.to_manifest_dict() for article in articles], handle, ensure_ascii=False, indent=2)
@@ -434,6 +443,11 @@ class PaperClassificationService:
 
 def run_from_args(args) -> int:
     """CLI adapter for python -m refchaser classify-papers."""
-    service = PaperClassificationService(Path(args.manifest), copy_files=not args.move)
+    service = PaperClassificationService(
+        Path(args.manifest),
+        copy_files=not args.move,
+        output_dir=Path(args.out_dir) if getattr(args, "out_dir", None) else None,
+        organize_dir=Path(args.organize_dir) if getattr(args, "organize_dir", None) else None,
+    )
     service.run()
     return 0

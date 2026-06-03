@@ -229,10 +229,12 @@ class MultiJournalDownloadService:
         dry_run: bool = False,
         manifest_name: str = "multi_journal_manifest.json",
         report_name: str = "multi_journal_download_report.csv",
+        results_dir: Path | None = None,
         download_timeout: int = 15,
         pdf_only_candidates: bool = False,
     ):
         self.output_dir = Path(output_dir)
+        self.results_dir = Path(results_dir) if results_dir else self.output_dir
         self.journals = journals
         self.year = year
         self.limit = limit
@@ -304,16 +306,16 @@ class MultiJournalDownloadService:
 
     def write_manifest(self, articles: list[ArticleRecord]) -> Path:
         """Write a JSON manifest."""
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        path = self.output_dir / self.manifest_name
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        path = self.results_dir / self.manifest_name
         with open(path, "w", encoding="utf-8") as handle:
             json.dump([article.to_manifest_dict() for article in articles], handle, ensure_ascii=False, indent=2)
         return path
 
     def write_report(self, articles: list[ArticleRecord]) -> Path:
         """Write a CSV download report."""
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        path = self.output_dir / self.report_name
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        path = self.results_dir / self.report_name
         fields = [
             "journal",
             "title",
@@ -400,6 +402,7 @@ def run_from_args(args) -> int:
         limit=args.limit,
         per_journal_limit=args.per_journal_limit,
         dry_run=args.dry_run,
+        results_dir=Path(args.results_dir) if getattr(args, "results_dir", None) else None,
         download_timeout=getattr(args, "download_timeout", 15),
         pdf_only_candidates=getattr(args, "pdf_only_candidates", False),
     )
@@ -416,6 +419,7 @@ def run_nature_aging_from_args(args) -> int:
         limit=args.limit,
         per_journal_limit=None,
         dry_run=args.dry_run,
+        results_dir=Path(args.results_dir) if getattr(args, "results_dir", None) else None,
         download_timeout=getattr(args, "download_timeout", 15),
         pdf_only_candidates=getattr(args, "pdf_only_candidates", False),
         manifest_name="article_manifest.json",
