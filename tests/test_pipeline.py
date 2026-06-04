@@ -64,7 +64,7 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     service = SurveyPipelineService(
         papers_dir=tmp_path / "papers",
         results_dir=tmp_path / "results",
-        journal_specs=["nature-aging"],
+        query="LLM causal discovery",
         from_year=2024,
         to_year=2026,
         limit=50,
@@ -94,6 +94,8 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     assert [call[0] for call in calls] == ["download", "enrich", "classify", "stats", "visualize", "references"]
     assert calls[0][1].name == "papers"
     assert calls[0][2].name == "results"
+    assert calls[0][3][0].provider == "openalex-search"
+    assert calls[0][3][0].query == "LLM causal discovery"
     assert calls[0][4] == 50
     assert calls[0][5].keywords == ["senescence", "immune"]
     assert calls[0][5].article_types == ["Article"]
@@ -166,6 +168,7 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         papers_dir = str(tmp_path / "papers")
         results_dir = str(tmp_path / "results")
         journal = ["nature-aging"]
+        query = "LLM causal discovery"
         year = 2026
         from_year = 2024
         to_year = 2026
@@ -208,6 +211,7 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         captured["papers_dir"] = self.papers_dir
         captured["results_dir"] = self.results_dir
         captured["journal_specs"] = self.journal_specs
+        captured["query"] = self.query
         captured["limit"] = self.limit
         captured["article_filter"] = self.article_filter
         captured["filter_sources"] = self.filter_sources
@@ -226,6 +230,7 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
     assert captured["papers_dir"].name == "papers"
     assert captured["results_dir"].name == "results"
     assert captured["journal_specs"] == ["nature-aging"]
+    assert captured["query"] == "LLM causal discovery"
     assert captured["limit"] == 5
     assert captured["article_filter"].keywords == ["aging", "senescence"]
     assert captured["article_filter"].article_types == ["Article"]

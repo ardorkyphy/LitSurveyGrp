@@ -72,6 +72,7 @@ def build_parser():
 
     pipeline = subparsers.add_parser("run-survey", help="run download, enrichment, classification, stats, and visualization")
     pipeline.add_argument("--journal", action="append", help="journal key or custom spec; defaults to nature-aging")
+    pipeline.add_argument("--query", default="", help="OpenAlex full-work search query when no journal is specified")
     pipeline.add_argument("--year", type=int)
     add_article_filter_arguments(pipeline)
     pipeline.add_argument("--limit", type=int, help="maximum number of complete PDFs across all journals")

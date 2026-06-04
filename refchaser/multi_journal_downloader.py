@@ -30,6 +30,7 @@ class JournalConfig:
     provider: str = "layered"
     issn: str | None = None
     group: str = "general"
+    query: str = ""
 
 
 SUPPORTED_JOURNALS = {
@@ -247,6 +248,42 @@ class OpenAlexJournalProvider:
 
     def _clean_doi(self, doi: str) -> str:
         return (doi or "").removeprefix("https://doi.org/").strip()
+
+
+class OpenAlexSearchProvider(OpenAlexJournalProvider):
+    """Discover articles from OpenAlex full-work search instead of one journal."""
+
+    def __init__(
+        self,
+        query: str,
+        year: int | None = None,
+        limit: int | None = None,
+        timeout: int = 15,
+        session=None,
+        from_year: int | None = None,
+        to_year: int | None = None,
+    ):
+        super().__init__(
+            JournalConfig(name=f"OpenAlex search: {query}", provider="openalex-search", issn="search"),
+            year=year,
+            limit=limit,
+            timeout=timeout,
+            session=session,
+            from_year=from_year,
+            to_year=to_year,
+        )
+        self.query = query
+
+    def build_params(self) -> dict:
+        params = super().build_params()
+        filters = [
+            item
+            for item in params["filter"].split(",")
+            if not item.startswith("primary_location.source.issn:")
+        ]
+        params["filter"] = ",".join(filters)
+        params["search"] = self.query
+        return params
 
 
 class NatureCrawlerJournalProvider:
@@ -476,6 +513,15 @@ class MultiJournalDownloadService:
         if journal.provider == "openalex":
             return OpenAlexJournalProvider(
                 journal,
+                year=self.year,
+                limit=self.per_journal_limit,
+                timeout=self.download_timeout,
+                from_year=self.from_year,
+                to_year=self.to_year,
+            )
+        if journal.provider == "openalex-search":
+            return OpenAlexSearchProvider(
+                journal.query or journal.name,
                 year=self.year,
                 limit=self.per_journal_limit,
                 timeout=self.download_timeout,

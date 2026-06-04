@@ -11,6 +11,7 @@ from refchaser.multi_journal_downloader import (
     MultiJournalDownloadService,
     NatureCrawlerJournalProvider,
     OpenAlexJournalProvider,
+    OpenAlexSearchProvider,
     SUPPORTED_JOURNALS,
     list_supported_journals,
     parse_journal_specs,
@@ -263,6 +264,18 @@ def test_openalex_provider_builds_year_range_filter():
     )
 
 
+def test_openalex_search_provider_builds_full_work_search_params():
+    provider = OpenAlexSearchProvider("LLM causal discovery", from_year=2021, to_year=2026, limit=30)
+
+    params = provider.build_params()
+
+    assert params["search"] == "LLM causal discovery"
+    assert "primary_location.source.issn" not in params["filter"]
+    assert "type:article" in params["filter"]
+    assert "from_publication_date:2021-01-01" in params["filter"]
+    assert params["per-page"] == 30
+
+
 def test_openalex_provider_does_not_treat_doi_page_as_pdf():
     provider = OpenAlexJournalProvider(JournalConfig("IJCV", provider="openalex", issn="0920-5691"))
     article = provider.parse_item({
@@ -320,6 +333,19 @@ def test_multi_journal_service_builds_nature_crawler_source(tmp_path):
     source = service.build_source(service.journals[0])
 
     assert isinstance(source, NatureCrawlerJournalProvider)
+
+
+def test_multi_journal_service_builds_openalex_search_source(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Search", provider="openalex-search", query="LLM causal discovery")],
+        per_journal_limit=30,
+    )
+
+    source = service.build_source(service.journals[0])
+
+    assert isinstance(source, OpenAlexSearchProvider)
+    assert source.query == "LLM causal discovery"
 
 
 def test_layered_provider_deduplicates_and_records_provider_errors():

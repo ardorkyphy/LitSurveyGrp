@@ -129,8 +129,8 @@ def test_cli_run_survey_arguments():
     parser = build_parser()
     args = parser.parse_args([
         "run-survey",
-        "--journal",
-        "nature-aging",
+        "--query",
+        "LLM causal discovery",
         "--year",
         "2026",
         "--limit",
@@ -153,7 +153,8 @@ def test_cli_run_survey_arguments():
     ])
 
     assert args.command == "run-survey"
-    assert args.journal == ["nature-aging"]
+    assert args.query == "LLM causal discovery"
+    assert args.journal is None
     assert args.year == 2026
     assert args.limit == 50
     assert args.papers_dir.endswith("papers")

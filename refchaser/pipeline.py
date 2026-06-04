@@ -12,7 +12,7 @@ from refchaser.enrichment.metadata_enrichment import (
     MetadataEnrichmentService,
 )
 from refchaser.filters import ArticleFilter
-from refchaser.multi_journal_downloader import MultiJournalDownloadService, parse_journal_specs
+from refchaser.multi_journal_downloader import JournalConfig, MultiJournalDownloadService, parse_journal_specs
 from refchaser.paper_classifier import PaperClassificationService
 from refchaser.reference_analysis import ReferenceAnalysisService
 from refchaser.research_stats import ResearchStatsWriter
@@ -62,6 +62,7 @@ class SurveyPipelineService:
         papers_dir: Path,
         results_dir: Path,
         journal_specs: list[str] | None = None,
+        query: str = "",
         year: int | None = None,
         from_year: int | None = None,
         to_year: int | None = None,
@@ -101,7 +102,8 @@ class SurveyPipelineService:
     ):
         self.papers_dir = Path(papers_dir)
         self.results_dir = Path(results_dir)
-        self.journal_specs = journal_specs or ["nature-aging"]
+        self.query = query
+        self.journal_specs = journal_specs or ([] if query else ["nature-aging"])
         self.year = year
         self.from_year = from_year
         self.to_year = to_year
@@ -196,7 +198,7 @@ class SurveyPipelineService:
         service = MultiJournalDownloadService(
             output_dir=self.papers_dir,
             results_dir=self.results_dir,
-            journals=parse_journal_specs(self.journal_specs),
+            journals=self.build_journal_configs(),
             year=self.year,
             from_year=self.from_year,
             to_year=self.to_year,
@@ -212,6 +214,13 @@ class SurveyPipelineService:
         )
         service.run()
         return outputs.download_manifest
+
+    def build_journal_configs(self):
+        if self.journal_specs:
+            return parse_journal_specs(self.journal_specs)
+        if self.query:
+            return [JournalConfig(name=f"OpenAlex search: {self.query}", provider="openalex-search", query=self.query)]
+        return parse_journal_specs(["nature-aging"])
 
     def build_prefilter_enricher(self):
         if not self.article_filter.needs_citation_count():
@@ -250,6 +259,7 @@ class SurveyPipelineService:
         path = self.results_dir / "pipeline_report.json"
         report = outputs.to_dict()
         report["journals"] = list(self.journal_specs)
+        report["query"] = self.query
         report["year"] = self.year
         report["from_year"] = self.from_year
         report["to_year"] = self.to_year
@@ -303,6 +313,7 @@ def run_from_args(args) -> int:
         papers_dir=Path(args.papers_dir),
         results_dir=Path(args.results_dir),
         journal_specs=getattr(args, "journal", None),
+        query=getattr(args, "query", ""),
         year=getattr(args, "year", None),
         from_year=getattr(args, "from_year", None),
         to_year=getattr(args, "to_year", None),
