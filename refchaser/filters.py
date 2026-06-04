@@ -62,7 +62,7 @@ class ArticleFilter:
             article.journal,
             article.article_type,
         ]))
-        return all(normalize(keyword) in haystack for keyword in self.keywords)
+        return all(keyword_matches(keyword, haystack) for keyword in self.keywords)
 
     def _matches_article_type(self, article: ArticleRecord) -> bool:
         if not self.article_types:
@@ -107,3 +107,14 @@ def extract_year(value: str) -> int | None:
 
 def normalize(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
+
+
+def keyword_matches(keyword: str, haystack: str) -> bool:
+    normalized = normalize(keyword)
+    if normalized in haystack:
+        return True
+    aliases = {
+        "llm": ["large language model", "large language models"],
+        "casual discovery": ["causal discovery"],
+    }
+    return any(alias in haystack for alias in aliases.get(normalized, []))

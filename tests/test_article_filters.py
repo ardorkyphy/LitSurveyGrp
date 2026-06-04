@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from refchaser.filters import ArticleFilter, extract_year, normalize
+from refchaser.filters import ArticleFilter, extract_year, keyword_matches, normalize
 from refchaser.paper_models import ArticleRecord
 
 
@@ -49,3 +49,10 @@ def test_extract_year_and_normalize_helpers():
     assert extract_year("Published 2026/01") == 2026
     assert extract_year("") is None
     assert normalize("  Alice   ZHANG ") == "alice zhang"
+
+
+def test_keyword_matches_common_research_aliases():
+    text = "large language models improve causal discovery"
+
+    assert keyword_matches("LLM", text)
+    assert keyword_matches("casual discovery", text)

@@ -219,6 +219,7 @@ def test_openalex_provider_discovers_article_records():
                 "type": "article",
                 "publication_date": "2026-01-02",
                 "cited_by_count": 12,
+                "abstract_inverted_index": {"Large": [0], "language": [1], "models": [2]},
                 "primary_location": {
                     "pdf_url": "https://example.org/open.pdf",
                     "source": {"display_name": "International Journal of Computer Vision"},
@@ -247,6 +248,7 @@ def test_openalex_provider_discovers_article_records():
     assert articles[0].doi == "10.1007/test"
     assert articles[0].journal == "International Journal of Computer Vision"
     assert articles[0].pdf_url == "https://example.org/open.pdf"
+    assert articles[0].abstract == "Large language models"
     assert articles[0].citation_count == 12
     assert session.calls[0][1]["params"]["filter"] == "primary_location.source.issn:0920-5691,type:article,from_publication_date:2026-01-01,to_publication_date:2026-12-31"
 

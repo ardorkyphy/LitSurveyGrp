@@ -229,7 +229,7 @@ class OpenAlexJournalProvider:
             publish_date=item.get("publication_date", "") or str(item.get("publication_year", "")),
             authors=authors,
             institutions=institutions,
-            abstract="",
+            abstract=self._abstract_text(item.get("abstract_inverted_index") or {}),
             citation_count=item.get("cited_by_count"),
             pdf_resolution_status="provider_pdf_url" if pdf_url else "provider_no_pdf_url",
         )
@@ -248,6 +248,13 @@ class OpenAlexJournalProvider:
 
     def _clean_doi(self, doi: str) -> str:
         return (doi or "").removeprefix("https://doi.org/").strip()
+
+    def _abstract_text(self, inverted_index: dict) -> str:
+        words = []
+        for word, positions in inverted_index.items():
+            for position in positions:
+                words.append((position, word))
+        return " ".join(word for _, word in sorted(words))
 
 
 class OpenAlexSearchProvider(OpenAlexJournalProvider):
