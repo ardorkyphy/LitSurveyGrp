@@ -47,6 +47,22 @@ def test_cli_classify_papers_arguments():
     assert args.move is True
 
 
+def test_cli_clean_results_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "clean-results",
+        "--target",
+        "papers",
+        "--target",
+        "results",
+        "--dry-run",
+    ])
+
+    assert args.command == "clean-results"
+    assert args.target == ["papers", "results"]
+    assert args.dry_run is True
+
+
 def test_cli_export_ris_arguments():
     parser = build_parser()
     args = parser.parse_args(

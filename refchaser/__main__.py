@@ -30,6 +30,10 @@ def build_parser():
     list_journals = subparsers.add_parser("list-journals", help="list built-in journal catalog entries")
     list_journals.add_argument("--group", help="filter by journal group, e.g. ccf-a-journal")
 
+    clean = subparsers.add_parser("clean-results", help="remove generated papers/results outputs")
+    clean.add_argument("--target", action="append", help="relative generated directory to remove; defaults to papers and results")
+    clean.add_argument("--dry-run", action="store_true", help="show cleanup targets without deleting")
+
     classify = subparsers.add_parser("classify-papers", help="classify downloaded papers")
     classify.add_argument("--manifest", required=True)
     classify.add_argument("--move", action="store_true", help="move PDFs instead of copying")
@@ -140,6 +144,9 @@ def main():
     if args.command == "list-journals":
         from refchaser.multi_journal_downloader import run_list_from_args
         return run_list_from_args(args)
+    if args.command == "clean-results":
+        from refchaser.cleanup import run_from_args
+        return run_from_args(args)
     if args.command == "classify-papers":
         from refchaser.paper_classifier import run_from_args
         return run_from_args(args)
