@@ -38,10 +38,26 @@ class ReferenceRecord:
     publish_date: str = ""
     authors: list[str] = field(default_factory=list)
     abstract: str = ""
+    citation_count: Optional[int] = None
+    citation_source: str = ""
+    citation_counts: dict[str, int] = field(default_factory=dict)
+    metadata_sources: list[str] = field(default_factory=list)
     relevance_score: float = 0.0
     relevance_reason: str = ""
+    value_score: float = 0.0
+    value_reason: str = ""
+    journal_tier: str = ""
+    journal_tier_score: float = 0.0
     source_article_doi: str = ""
     source_article_title: str = ""
+    source_article_count: int = 1
+    source_article_titles: list[str] = field(default_factory=list)
+    source_article_dois: list[str] = field(default_factory=list)
+    pdf_url: str = ""
+    local_pdf_path: Optional[Path] = None
+    download_status: str = "pending"
+    pdf_status: str = "unchecked"
+    error: str = ""
 
     def to_manifest_dict(self) -> dict:
         return {
@@ -51,10 +67,26 @@ class ReferenceRecord:
             "publish_date": self.publish_date,
             "authors": list(self.authors),
             "abstract": self.abstract,
+            "citation_count": self.citation_count,
+            "citation_source": self.citation_source,
+            "citation_counts": dict(self.citation_counts),
+            "metadata_sources": list(self.metadata_sources),
             "relevance_score": self.relevance_score,
             "relevance_reason": self.relevance_reason,
+            "value_score": self.value_score,
+            "value_reason": self.value_reason,
+            "journal_tier": self.journal_tier,
+            "journal_tier_score": self.journal_tier_score,
             "source_article_doi": self.source_article_doi,
             "source_article_title": self.source_article_title,
+            "source_article_count": self.source_article_count,
+            "source_article_titles": list(self.source_article_titles),
+            "source_article_dois": list(self.source_article_dois),
+            "pdf_url": self.pdf_url,
+            "local_pdf_path": str(self.local_pdf_path) if self.local_pdf_path else "",
+            "download_status": self.download_status,
+            "pdf_status": self.pdf_status,
+            "error": self.error,
         }
 
     @classmethod
@@ -66,10 +98,26 @@ class ReferenceRecord:
             publish_date=data.get("publish_date", ""),
             authors=list(data.get("authors") or []),
             abstract=data.get("abstract", ""),
+            citation_count=data.get("citation_count"),
+            citation_source=data.get("citation_source", ""),
+            citation_counts=dict(data.get("citation_counts") or {}),
+            metadata_sources=list(data.get("metadata_sources") or []),
             relevance_score=float(data.get("relevance_score") or 0.0),
             relevance_reason=data.get("relevance_reason", ""),
+            value_score=float(data.get("value_score") or 0.0),
+            value_reason=data.get("value_reason", ""),
+            journal_tier=data.get("journal_tier", ""),
+            journal_tier_score=float(data.get("journal_tier_score") or 0.0),
             source_article_doi=data.get("source_article_doi", ""),
             source_article_title=data.get("source_article_title", ""),
+            source_article_count=int(data.get("source_article_count") or 1),
+            source_article_titles=list(data.get("source_article_titles") or []),
+            source_article_dois=list(data.get("source_article_dois") or []),
+            pdf_url=data.get("pdf_url", ""),
+            local_pdf_path=Path(data["local_pdf_path"]) if data.get("local_pdf_path") else None,
+            download_status=data.get("download_status", "pending"),
+            pdf_status=data.get("pdf_status", "unchecked"),
+            error=data.get("error", ""),
         )
 
 

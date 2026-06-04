@@ -48,11 +48,18 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
         path.write_text("<html></html>", encoding="utf-8")
         return path
 
+    def fake_reference_analysis(self):
+        calls.append(("references", self.manifest_path, self.out_dir, self.max_reference_downloads))
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        (self.out_dir / "reference_manifest.json").write_text("[]", encoding="utf-8")
+        return []
+
     monkeypatch.setattr("refchaser.pipeline.MultiJournalDownloadService.run", fake_download)
     monkeypatch.setattr("refchaser.pipeline.MetadataEnrichmentService.run", fake_enrich)
     monkeypatch.setattr("refchaser.pipeline.PaperClassificationService.run", fake_classify)
     monkeypatch.setattr("refchaser.pipeline.ResearchStatsWriter.write", fake_stats)
     monkeypatch.setattr("refchaser.pipeline.ResearchDashboardWriter.write", fake_dashboard)
+    monkeypatch.setattr("refchaser.pipeline.ReferenceAnalysisService.run", fake_reference_analysis)
 
     service = SurveyPipelineService(
         papers_dir=tmp_path / "papers",
@@ -67,6 +74,9 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
         authors=["Alice"],
         institutions=["Institute"],
         filter_sources=["openalex"],
+        analyze_references=True,
+        max_references_per_paper=30,
+        max_reference_downloads=5,
         request_interval=1.0,
         top_n=12,
     )
@@ -79,8 +89,9 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     assert outputs.classified_manifest.name == "classified_manifest.json"
     assert outputs.stats_dir.name == "stats"
     assert outputs.dashboard.name == "research_dashboard.html"
+    assert outputs.references_dir.name == "references"
     assert outputs.final_manifest == outputs.classified_manifest
-    assert [call[0] for call in calls] == ["download", "enrich", "classify", "stats", "visualize"]
+    assert [call[0] for call in calls] == ["download", "enrich", "classify", "stats", "visualize", "references"]
     assert calls[0][1].name == "papers"
     assert calls[0][2].name == "results"
     assert calls[0][4] == 50
@@ -94,8 +105,11 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     assert calls[1][3] == ["openalex", "semantic-scholar", "europe-pmc", "crossref"]
     assert calls[2][4] == "allenai-specter"
     assert calls[3][2].name == "stats"
+    assert calls[5][3] == 5
     assert report["final_manifest"].endswith("classified_manifest.json")
     assert report["steps"]["enrichment"] is True
+    assert report["steps"]["reference_analysis"] is True
+    assert report["reference_analysis"]["max_references_per_paper"] == 30
 
 
 def test_survey_pipeline_can_skip_optional_steps(monkeypatch, tmp_path):
@@ -132,6 +146,7 @@ def test_survey_pipeline_can_skip_optional_steps(monkeypatch, tmp_path):
         "classification": False,
         "stats": False,
         "visualization": False,
+        "reference_analysis": False,
     }
 
 
@@ -174,6 +189,16 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         sentence_model = "allenai-specter"
         skip_stats = False
         skip_visualization = False
+        analyze_references = True
+        out_dir = str(tmp_path / "references")
+        max_references_per_paper = 25
+        max_total_references = 250
+        reference_relevance_threshold = 0.35
+        max_reference_downloads = 6
+        min_reference_value_score = 0.55
+        require_reference_doi = True
+        reference_query = "immune aging"
+        reference_sources = ["openalex"]
         top = 9
         clean_existing = True
 
@@ -188,6 +213,10 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         captured["filter_sources"] = self.filter_sources
         captured["request_interval"] = self.request_interval
         captured["metadata_sources"] = self.metadata_sources
+        captured["analyze_references"] = self.analyze_references
+        captured["reference_out_dir"] = self.reference_out_dir
+        captured["max_reference_downloads"] = self.max_reference_downloads
+        captured["reference_sources"] = self.reference_sources
         captured["clean_existing"] = self.clean_existing
         return None
 
@@ -206,4 +235,8 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
     assert captured["filter_sources"] == ["openalex", "crossref"]
     assert captured["request_interval"] == 1.5
     assert captured["metadata_sources"] == ["openalex", "crossref"]
+    assert captured["analyze_references"] is True
+    assert captured["reference_out_dir"].name == "references"
+    assert captured["max_reference_downloads"] == 6
+    assert captured["reference_sources"] == ["openalex"]
     assert captured["clean_existing"] is True

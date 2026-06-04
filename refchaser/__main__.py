@@ -49,6 +49,10 @@ def build_parser():
     extract_refs.add_argument("--manifest", required=True)
     extract_refs.add_argument("--max-references", type=int)
 
+    analyze_refs = subparsers.add_parser("analyze-references", help="build and rank a cited-reference paper pool")
+    analyze_refs.add_argument("--manifest", required=True)
+    add_reference_analysis_arguments(analyze_refs)
+
     enrich = subparsers.add_parser("enrich-metadata", help="enrich paper metadata from open scholarly APIs")
     enrich.add_argument("--manifest", required=True)
     enrich.add_argument("--sources", nargs="+", choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"])
@@ -88,6 +92,8 @@ def build_parser():
     pipeline.add_argument("--skip-classification", action="store_true")
     pipeline.add_argument("--skip-stats", action="store_true")
     pipeline.add_argument("--skip-visualization", action="store_true")
+    pipeline.add_argument("--analyze-references", action="store_true")
+    add_reference_analysis_arguments(pipeline)
 
     return parser
 
@@ -106,6 +112,18 @@ def add_article_filter_arguments(parser):
         choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"],
         help="metadata sources used only for citation-threshold prefiltering",
     )
+
+
+def add_reference_analysis_arguments(parser):
+    parser.add_argument("--out-dir", help="directory to save reference analysis outputs")
+    parser.add_argument("--max-references-per-paper", type=int, default=50)
+    parser.add_argument("--max-total-references", type=int, default=1000)
+    parser.add_argument("--reference-relevance-threshold", type=float, default=0.30)
+    parser.add_argument("--max-reference-downloads", type=int, default=0)
+    parser.add_argument("--min-reference-value-score", type=float, default=0.45)
+    parser.add_argument("--require-reference-doi", action="store_true")
+    parser.add_argument("--reference-query", default="")
+    parser.add_argument("--reference-sources", nargs="+", choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"])
 
 
 def main():
@@ -129,6 +147,9 @@ def main():
         return run_from_args(args)
     if args.command == "extract-references":
         from refchaser.reference_extractor import run_from_args
+        return run_from_args(args)
+    if args.command == "analyze-references":
+        from refchaser.reference_analysis import run_from_args
         return run_from_args(args)
     if args.command == "enrich-metadata":
         from refchaser.enrichment.metadata_enrichment import run_from_args

@@ -144,6 +144,11 @@ def test_cli_run_survey_arguments():
         "crossref",
         "--request-interval",
         "1.5",
+        "--analyze-references",
+        "--max-references-per-paper",
+        "30",
+        "--max-reference-downloads",
+        "5",
         "--clean-existing",
     ])
 
@@ -155,4 +160,46 @@ def test_cli_run_survey_arguments():
     assert args.results_dir.endswith("results")
     assert args.sources == ["openalex", "crossref"]
     assert args.request_interval == 1.5
+    assert args.analyze_references is True
+    assert args.max_references_per_paper == 30
+    assert args.max_reference_downloads == 5
     assert args.clean_existing is True
+
+
+def test_cli_analyze_references_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "analyze-references",
+        "--manifest",
+        r"D:\results\classified_manifest.json",
+        "--out-dir",
+        r"D:\results\references",
+        "--max-references-per-paper",
+        "40",
+        "--max-total-references",
+        "400",
+        "--reference-relevance-threshold",
+        "0.35",
+        "--max-reference-downloads",
+        "20",
+        "--min-reference-value-score",
+        "0.5",
+        "--require-reference-doi",
+        "--reference-query",
+        "immune aging",
+        "--reference-sources",
+        "openalex",
+        "crossref",
+    ])
+
+    assert args.command == "analyze-references"
+    assert args.manifest.endswith("classified_manifest.json")
+    assert args.out_dir.endswith("references")
+    assert args.max_references_per_paper == 40
+    assert args.max_total_references == 400
+    assert args.reference_relevance_threshold == 0.35
+    assert args.max_reference_downloads == 20
+    assert args.min_reference_value_score == 0.5
+    assert args.require_reference_doi is True
+    assert args.reference_query == "immune aging"
+    assert args.reference_sources == ["openalex", "crossref"]

@@ -14,6 +14,7 @@ from refchaser.enrichment.metadata_enrichment import (
 from refchaser.filters import ArticleFilter
 from refchaser.multi_journal_downloader import MultiJournalDownloadService, parse_journal_specs
 from refchaser.paper_classifier import PaperClassificationService
+from refchaser.reference_analysis import ReferenceAnalysisService
 from refchaser.research_stats import ResearchStatsWriter
 from refchaser.visualization import ResearchDashboardWriter
 
@@ -30,6 +31,7 @@ class SurveyPipelineOutputs:
     classified_manifest: Path | None = None
     stats_dir: Path | None = None
     dashboard: Path | None = None
+    references_dir: Path | None = None
     pipeline_report: Path | None = None
 
     @property
@@ -47,6 +49,7 @@ class SurveyPipelineOutputs:
             "final_manifest": str(self.final_manifest),
             "stats_dir": str(self.stats_dir or ""),
             "dashboard": str(self.dashboard or ""),
+            "references_dir": str(self.references_dir or ""),
             "pipeline_report": str(self.pipeline_report or ""),
         }
 
@@ -83,6 +86,16 @@ class SurveyPipelineService:
         sentence_model: str = "allenai-specter",
         write_stats: bool = True,
         write_visualization: bool = True,
+        analyze_references: bool = False,
+        reference_out_dir: Path | None = None,
+        max_references_per_paper: int | None = 50,
+        max_total_references: int | None = 1000,
+        reference_relevance_threshold: float = 0.30,
+        max_reference_downloads: int = 0,
+        min_reference_value_score: float = 0.45,
+        require_reference_doi: bool = False,
+        reference_query: str = "",
+        reference_sources: list[str] | None = None,
         top_n: int = 20,
         clean_existing: bool = False,
     ):
@@ -118,6 +131,16 @@ class SurveyPipelineService:
         self.sentence_model = sentence_model
         self.write_stats = write_stats
         self.write_visualization = write_visualization
+        self.analyze_references = analyze_references
+        self.reference_out_dir = Path(reference_out_dir) if reference_out_dir else None
+        self.max_references_per_paper = max_references_per_paper
+        self.max_total_references = max_total_references
+        self.reference_relevance_threshold = reference_relevance_threshold
+        self.max_reference_downloads = max_reference_downloads
+        self.min_reference_value_score = min_reference_value_score
+        self.require_reference_doi = require_reference_doi
+        self.reference_query = reference_query
+        self.reference_sources = reference_sources
         self.top_n = top_n
         self.clean_existing = clean_existing
 
@@ -149,6 +172,23 @@ class SurveyPipelineService:
                 out_dir=self.results_dir / "visualization",
                 top_n=self.top_n,
             ).write()
+        if self.analyze_references:
+            outputs.references_dir = self.reference_out_dir or self.results_dir / "references"
+            ReferenceAnalysisService(
+                current_manifest,
+                out_dir=outputs.references_dir,
+                max_references_per_paper=self.max_references_per_paper,
+                max_total_references=self.max_total_references,
+                relevance_threshold=self.reference_relevance_threshold,
+                max_reference_downloads=self.max_reference_downloads,
+                min_value_score=self.min_reference_value_score,
+                require_doi_for_download=self.require_reference_doi,
+                reference_query=self.reference_query,
+                metadata_sources=self.reference_sources,
+                metadata_timeout=self.metadata_timeout,
+                request_interval=self.request_interval,
+                sentence_model=self.sentence_model,
+            ).run()
         outputs.pipeline_report = self.write_pipeline_report(outputs)
         return outputs
 
@@ -231,6 +271,16 @@ class SurveyPipelineService:
             "classification": self.classify_papers,
             "stats": self.write_stats,
             "visualization": self.write_visualization,
+            "reference_analysis": self.analyze_references,
+        }
+        report["reference_analysis"] = {
+            "max_references_per_paper": self.max_references_per_paper,
+            "max_total_references": self.max_total_references,
+            "reference_relevance_threshold": self.reference_relevance_threshold,
+            "max_reference_downloads": self.max_reference_downloads,
+            "min_reference_value_score": self.min_reference_value_score,
+            "require_reference_doi": self.require_reference_doi,
+            "reference_sources": self.reference_sources,
         }
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(report, handle, ensure_ascii=False, indent=2)
@@ -276,6 +326,16 @@ def run_from_args(args) -> int:
         sentence_model=getattr(args, "sentence_model", "allenai-specter"),
         write_stats=not getattr(args, "skip_stats", False),
         write_visualization=not getattr(args, "skip_visualization", False),
+        analyze_references=getattr(args, "analyze_references", False),
+        reference_out_dir=Path(args.out_dir) if getattr(args, "out_dir", None) else None,
+        max_references_per_paper=getattr(args, "max_references_per_paper", 50),
+        max_total_references=getattr(args, "max_total_references", 1000),
+        reference_relevance_threshold=getattr(args, "reference_relevance_threshold", 0.30),
+        max_reference_downloads=getattr(args, "max_reference_downloads", 0),
+        min_reference_value_score=getattr(args, "min_reference_value_score", 0.45),
+        require_reference_doi=getattr(args, "require_reference_doi", False),
+        reference_query=getattr(args, "reference_query", ""),
+        reference_sources=getattr(args, "reference_sources", None),
         top_n=getattr(args, "top", 20),
         clean_existing=getattr(args, "clean_existing", False),
     )
