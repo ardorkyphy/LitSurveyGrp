@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 
-from refchaser.nature_aging_downloader import (
+from litsurveygrp.nature_aging_downloader import (
     NatureAgingCrawler,
     NatureAgingDownloadService,
     run_from_args,
 )
-from refchaser.paper_models import ArticleRecord
-from refchaser.pdf_utils import PdfDownloader
+from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.pdf_utils import PdfDownloader
 
 
 LISTING_HTML = """
@@ -231,3 +231,4 @@ def test_download_cli_adapter_runs_service(monkeypatch, tmp_path):
     monkeypatch.setattr(NatureAgingDownloadService, "run", lambda self: [])
 
     assert run_from_args(Args()) == 0
+

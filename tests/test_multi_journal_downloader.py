@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from refchaser.multi_journal_downloader import (
+from litsurveygrp.multi_journal_downloader import (
     CrossrefJournalProvider,
     JournalConfig,
     LayeredJournalProvider,
@@ -19,10 +19,11 @@ from refchaser.multi_journal_downloader import (
     run_nature_aging_from_args,
     run_from_args,
 )
-from refchaser.filters import ArticleFilter
-from refchaser.nature_aging_downloader import NatureJournalCrawler
-from refchaser.paper_models import ArticleRecord
-from refchaser.pdf_utils import PdfDownloader
+from litsurveygrp.filters import ArticleFilter
+from litsurveygrp.nature_aging_downloader import NatureJournalCrawler
+from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.pdf_utils import PdfDownloader
+from litsurveygrp.provider_registry import JournalProviderRegistry
 
 
 LISTING_HTML = """
@@ -351,6 +352,38 @@ def test_multi_journal_service_builds_openalex_search_source(tmp_path):
     assert source.query == "LLM causal discovery"
 
 
+def test_multi_journal_service_accepts_custom_provider_registry(tmp_path):
+    registry = JournalProviderRegistry()
+    captured = {}
+
+    class CustomProvider:
+        def __init__(self, journal, context):
+            captured["journal"] = journal
+            captured["context"] = context
+
+        def discover(self):
+            return [ArticleRecord(title="Custom source paper")]
+
+    registry.register("custom", lambda journal, context: CustomProvider(journal, context))
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Custom", provider="custom")],
+        year=2026,
+        per_journal_limit=7,
+        download_timeout=9,
+        dry_run=True,
+        provider_registry=registry,
+    )
+
+    articles = service.run()
+
+    assert [article.title for article in articles] == ["Custom source paper"]
+    assert captured["journal"].name == "Custom"
+    assert captured["context"].year == 2026
+    assert captured["context"].limit == 7
+    assert captured["context"].timeout == 9
+
+
 def test_layered_provider_deduplicates_and_records_provider_errors():
     class GoodProvider:
         def __init__(self, articles):
@@ -502,6 +535,56 @@ def test_multi_journal_service_can_skip_non_pdf_candidates(tmp_path):
     assert processed[1].download_status == "downloaded"
 
 
+def test_multi_journal_service_can_collect_metadata_without_pdf_download(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path / "papers",
+        results_dir=tmp_path / "results",
+        journals=[JournalConfig("Nature Aging", "nataging")],
+        download_pdfs=False,
+    )
+    service.iter_articles = lambda: iter([
+        ArticleRecord(title="Metadata one", doi="10/one", pdf_url="https://example.org/one.pdf"),
+        ArticleRecord(title="Metadata two", doi="10/two"),
+    ])
+    service.downloader.download = lambda article: (_ for _ in ()).throw(AssertionError("PDF download should not run"))
+
+    processed = service.run()
+    saved = json.loads((tmp_path / "results" / "multi_journal_manifest.json").read_text(encoding="utf-8"))
+
+    assert [article.download_status for article in processed] == ["metadata_only", "metadata_only"]
+    assert [article.pdf_status for article in processed] == ["not_requested", "not_requested"]
+    assert [item["title"] for item in saved] == ["Metadata one", "Metadata two"]
+
+
+def test_multi_journal_service_can_download_with_parallel_workers(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path / "papers",
+        results_dir=tmp_path / "results",
+        journals=[JournalConfig("Nature Aging", "nataging")],
+        download_workers=2,
+        progress_write_interval=1,
+    )
+    service.iter_articles = lambda: iter([
+        ArticleRecord(title="One", doi="10/one", pdf_url="https://example.org/one.pdf"),
+        ArticleRecord(title="Two", doi="10/two", pdf_url="https://example.org/two.pdf"),
+    ])
+
+    def fake_worker(article):
+        article.download_status = "downloaded"
+        article.pdf_status = "complete"
+        article.local_pdf_path = tmp_path / "papers" / "all_papers" / f"{article.title}.pdf"
+        return article
+
+    service.download_article_in_worker = fake_worker
+
+    processed = service.run()
+    saved = json.loads((tmp_path / "results" / "multi_journal_manifest.json").read_text(encoding="utf-8"))
+
+    assert {article.title for article in processed} == {"One", "Two"}
+    assert all(article.pdf_status == "complete" for article in processed)
+    assert {item["title"] for item in saved} == {"One", "Two"}
+
+
 def test_multi_journal_service_filters_before_download_and_manifest(tmp_path):
     service = MultiJournalDownloadService(
         output_dir=tmp_path,
@@ -558,6 +641,8 @@ def test_multi_journal_cli_adapter_runs(monkeypatch, tmp_path):
         limit = 1
         per_journal_limit = 2
         download_timeout = 7
+        download_workers = 3
+        download_pdfs = False
         pdf_only_candidates = False
         dry_run = True
         keyword = ["aging"]
@@ -573,6 +658,8 @@ def test_multi_journal_cli_adapter_runs(monkeypatch, tmp_path):
     def fake_run(self):
         captured["article_filter"] = self.article_filter
         captured["prefilter_enricher"] = self.prefilter_enricher
+        captured["download_workers"] = self.download_workers
+        captured["download_pdfs"] = self.download_pdfs
         return []
 
     monkeypatch.setattr(MultiJournalDownloadService, "run", fake_run)
@@ -582,6 +669,8 @@ def test_multi_journal_cli_adapter_runs(monkeypatch, tmp_path):
     assert captured["article_filter"].article_types == ["Article"]
     assert captured["article_filter"].min_citations == 3
     assert captured["prefilter_enricher"] is not None
+    assert captured["download_workers"] == 3
+    assert captured["download_pdfs"] is False
 
 
 def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_path):
@@ -594,6 +683,8 @@ def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_pat
         limit = 1
         dry_run = True
         download_timeout = 15
+        download_workers = 4
+        download_pdfs = False
         pdf_only_candidates = False
         keyword = []
         article_type = []
@@ -611,6 +702,8 @@ def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_pat
         captured["journals"] = self.journals
         captured["manifest_name"] = self.manifest_name
         captured["report_name"] = self.report_name
+        captured["download_workers"] = self.download_workers
+        captured["download_pdfs"] = self.download_pdfs
         return []
 
     monkeypatch.setattr(MultiJournalDownloadService, "run", fake_run)
@@ -621,6 +714,8 @@ def test_nature_aging_compat_cli_uses_multi_journal_service(monkeypatch, tmp_pat
     assert captured["journals"] == [SUPPORTED_JOURNALS["nature-aging"]]
     assert captured["manifest_name"] == "article_manifest.json"
     assert captured["report_name"] == "download_report.csv"
+    assert captured["download_workers"] == 4
+    assert captured["download_pdfs"] is False
 
 
 def test_list_journals_cli_adapter_prints_catalog(capsys):
@@ -631,3 +726,4 @@ def test_list_journals_cli_adapter_prints_catalog(capsys):
     output = capsys.readouterr().out
     assert "tpami" in output
     assert "ccf-a-journal" in output
+

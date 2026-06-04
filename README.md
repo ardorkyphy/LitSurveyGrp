@@ -1,92 +1,226 @@
-Refchaser Provisional User Guide
-=================================
-This package is developed as a toolbox for conducting literature reviews and systematic reviews. It allows downloading full text articles in batches. It can parse the reference lists of pdf articles for searching reference list.  
+# LitSurveyGrp
 
-The latest version is 0.0.3  
+Open literature survey automation for research discovery.
 
-Currently, it only support Windows systems.  
+LitSurveyGrp helps researchers discover papers, enrich scholarly metadata,
+collect accessible PDFs, group papers into research topics, analyze cited
+references, and generate research-oriented statistics and offline dashboards.
 
-Although the use of python packages usually requires some programming knowledge, refchaser provides quick APIs to be called in commandline, which even lay people can use.  
+## Quick Start
 
-Acknowledgement to developers of [CERMINE](https://github.com/CeON/CERMINE.git)
+Install in editable mode from the project root:
 
-***
-***What do I need to install before using refchaser?***  
-You need to install the following programming languages.  
+```powershell
+python -m pip install -e .
+```
 
-[python 3](https://www.python.org/downloads/)
+For development and PDF/reference extraction support:
 
-[Java](https://www.java.com/en/download/windows-64bit.jsp)
+```powershell
+python -m pip install -r requirements-dev.txt
+```
 
-[R](https://www.r-project.org/)
+After installation, use the short command:
 
-Although this is a python module, it works by calling third-party applications written in the other two languages.
-Make sure to add the executables of these languages to [PATH environment variable](https://en.wikipedia.org/wiki/PATH_(variable))
-***
-***How to install refchaser?***  
+```powershell
+lsg --help
+lsg list-journals
+```
 
-After you have installed python 3, open cmd.exe.    
+The module entry point is also available during local development:
 
-Run command:  
+```powershell
+python -m litsurveygrp --help
+```
 
+Optional API configuration can be provided through environment variables. Copy
+`.env.example` to `.env` for local use, and never commit `.env`.
 
-    pip install refchaser
-***
-***How to get help?***  
+## Common Workflows
 
-Open cmd.exe  
+Minimal metadata-first run:
 
-Run command:  
+```powershell
+lsg run-survey `
+  --journal nature-aging `
+  --per-journal-limit 10 `
+  --metadata-only `
+  --papers-dir papers `
+  --results-dir results
+```
 
+Run a Nature Aging survey:
 
-    python -m refchaser -h
-***
-***How to batch-download articles?***  
+```powershell
+lsg run-survey `
+  --journal nature-aging `
+  --limit 50 `
+  --download-workers 4 `
+  --papers-dir papers `
+  --results-dir results `
+  --analyze-references
+```
 
-Open cmd.exe  
+For larger surveys, prefer limiting discovered records instead of requiring a
+large number of completed PDFs:
 
-Run command:  
+```powershell
+lsg run-survey `
+  --journal nature-aging `
+  --per-journal-limit 150 `
+  --metadata-only `
+  --papers-dir papers `
+  --results-dir results
+```
 
+PDF download is optional. By default LitSurveyGrp tries to download accessible
+PDFs. Use `--metadata-only` when you want fast metadata, classification,
+statistics, and visualization first. Use `--download-pdfs` explicitly when you
+want the pipeline to try PDF acquisition.
 
-    python -m refchaser A -p C://directory/containing/bibliographical/files/ -t C://directory/where/you/want/fulltexts/saved/
+Download only the highest-value PDFs after a metadata-first run:
 
-The `-p` parameter should contain nothing else than bibiographic files of citations you want to download.
-The `-t` is a folder where you want to save all the downloaded PDF articles.  
+```powershell
+lsg download-pdfs `
+  --manifest results\classified_manifest.json `
+  --papers-dir papers `
+  --results-dir results `
+  --top 20 `
+  --download-workers 4
+```
 
-Alternatively, you can just run this command:  
+This command ranks papers by research value before downloading. The score uses
+citation count, journal tier, recency, review-entry value, classification
+confidence, and metadata completeness. Change `--top` to control how many PDFs
+to attempt. Optional controls include `--min-value-score`, `--require-doi`, and
+`--include-existing`.
 
+Run a keyword-based survey:
 
-    python -m refchaser A
+```powershell
+lsg run-survey `
+  --query "Large Language Model causal discovery" `
+  --keyword "Large Language Model" `
+  --keyword "causal discovery" `
+  --limit 30 `
+  --papers-dir papers `
+  --results-dir results
+```
 
-And a graphic user interface will guide you through.
-***
-***How to parse reference lists of pdf articles and generate queries?***  
+Clean generated experiment outputs:
 
-Open cmd.exe  
+```powershell
+lsg clean-results --target papers --target results
+```
 
-Run command:  
+## Outputs
 
+Typical output layout:
 
-    python -m refchaser B -p C://directory/containing/pdf/files/ -t C://directory/where/you/want/queries/saved -x WOS PubMed
+```text
+papers/
+  all_papers/
+  Topic_.../
 
-The database names pass to the `-x` can be numbers
+results/
+  article_manifest.json
+  enriched_manifest.json
+  classified_manifest.json
+  pdf_download_ranking.csv
+  pdf_downloaded_manifest.json
+  pdf_download_report.csv
+  pdf_download_summary.json
+  download_report.csv
+  pipeline_report.json
+  stats/
+  visualization/
+  references/
+```
 
-    python -m refchaser B -p C://directory/containing/pdf/files/ -t C://directory/where/you/want/queries/saved -x 1 2
+Important files:
 
-The mapping relationships are as follows:
+- `classified_manifest.json`: final paper metadata after enrichment and topic
+  classification.
+- `stats/research_profile.json`: compact research profile for dashboard use.
+- `stats/topic_profiles.csv`: topic distribution, representative papers, and
+  topic trends.
+- `stats/paper_recommendations.csv`: high-value source papers for reading.
+- `pdf_download_ranking.csv`: ranked PDF-download candidates and reasons.
+- `pdf_downloaded_manifest.json`: manifest after top-ranked PDF download.
+- `references/reference_manifest.json`: ranked cited-reference paper pool.
 
-    1 - WOS - Web of Science
-    2 - PubMed -PubMed
-    3 - EMBASE - EMBASE
-    4 - Scopus - Scopus
-    5 - GS - Google Scholar
+The main dashboard is:
 
-The `-p` parameter should contain nothing else than PDF files you want parsed.  
-The `-t` is a folder where you want to save forward search queries (consisting of titles of parsed articles) and backward search queries (consisting of titles of references) in .txt format.  
-The `-x` parameter is the databases you want to search with the forward and backward query, respectively. The package can create queries according to search rules of different databases.  
+```text
+results/visualization/research_dashboard.html
+```
 
-Alternatively, you can just run this command:
+## Notes
 
-    python -m refchaser B
+- PDF acquisition is best-effort and depends on open-access availability,
+  publisher behavior, and network conditions.
+- Citation counts come from open sources such as OpenAlex and Crossref, so they
+  may differ from Google Scholar, Web of Science, or Scopus.
+- The project is a research-assistance tool, not a formal bibliometric
+  evaluation system.
+- LitSurveyGrp uses open APIs and accessible full-text sources. It is not
+  intended to bypass paywalls or publisher access controls.
 
-And a graphic user interface will guide you through.
+See also:
+
+- `FAQ.md`
+- `CONTRIBUTING.md`
+
+## Pre-Release Checklist
+
+Before publishing or tagging a release:
+
+```powershell
+python -m pytest tests -q
+git status --short
+```
+
+Confirm that `.env`, `papers/`, `results/`, PDFs, model caches, and other local
+experiment outputs are not staged.
+
+## 中文简介
+
+LitSurveyGrp 是一个面向科研调研的自动化工具，用于批量发现论文、补全开放学术元数据、
+获取可访问 PDF、自动归组研究主题、分析引用文献，并生成科研统计和离线可视化报告。
+
+安装后推荐使用短命令：
+
+```powershell
+lsg --help
+```
+
+开发和 PDF/引用提取相关依赖：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
+大规模实验建议使用 `--per-journal-limit` 控制抓取文章记录数，并使用
+`--metadata-only` 先快速生成元数据、分类、统计和可视化。需要 PDF 时再显式使用
+`--download-pdfs`，并可配合 `--download-workers` 并发下载可访问 PDF。
+
+推荐的大规模流程是：先只获取元数据并完成分类统计，再按研究价值下载 Top PDF：
+
+```powershell
+lsg download-pdfs `
+  --manifest results\classified_manifest.json `
+  --papers-dir papers `
+  --results-dir results `
+  --top 20 `
+  --download-workers 4
+```
+
+`--top` 就是“值得下载 PDF 的前几篇”这个超参。排序依据包括引用量、期刊水平、年份新近度、是否适合作为综述入口、分类置信度和元数据完整度。
+
+说明：
+
+- PDF 获取是开放全文优先、尽力而为，不保证每篇论文都能下载。
+- 引用量来自 OpenAlex、Crossref 等开放来源，和 Google Scholar、Web of
+  Science、Scopus 可能不同。
+- 本项目用于辅助科研调研，不是正式文献计量评价系统。
+- 项目不会绕过付费墙或出版社访问控制。

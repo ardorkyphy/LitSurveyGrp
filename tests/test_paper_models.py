@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from refchaser.paper_models import ArticleRecord, PdfValidationResult, ReferenceRecord
+from litsurveygrp.paper_models import ArticleRecord, PdfValidationResult, ReferenceRecord
 
 
 def test_article_record_defaults_are_mvp_contract():
@@ -111,3 +111,4 @@ def test_pdf_validation_result_defaults_are_explicit():
     assert result.has_abstract is False
     assert result.has_references is False
     assert result.has_paywall_marker is False
+

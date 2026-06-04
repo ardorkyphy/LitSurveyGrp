@@ -2,11 +2,11 @@
 
 import json
 
-from refchaser.citation_exporter import ReferenceRisExporter
-from refchaser.multi_journal_downloader import JournalConfig, MultiJournalDownloadService
-from refchaser.paper_classifier import PaperClassificationService
-from refchaser.paper_models import ArticleRecord
-from refchaser.reference_extractor import ReferenceExtractionService
+from litsurveygrp.citation_exporter import ReferenceRisExporter
+from litsurveygrp.multi_journal_downloader import JournalConfig, MultiJournalDownloadService
+from litsurveygrp.paper_classifier import PaperClassificationService
+from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.reference_extractor import ReferenceExtractionService
 
 
 REFERENCE_TEXT = """
@@ -84,3 +84,4 @@ def test_download_classify_extract_and_export_reference_pipeline(monkeypatch, tm
     assert ris_path.name == "reference_papers.ris"
     assert "TY  - JOUR" in ris_text
     assert "DO  - 10.1007/ref-one" in ris_text
+

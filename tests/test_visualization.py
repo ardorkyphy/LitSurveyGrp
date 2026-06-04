@@ -2,8 +2,8 @@
 
 import json
 
-from refchaser.paper_models import ArticleRecord
-from refchaser.visualization import ResearchDashboardWriter, run_from_args
+from litsurveygrp.paper_models import ArticleRecord, ReferenceRecord
+from litsurveygrp.visualization import ResearchDashboardWriter, run_from_args
 
 
 def test_research_dashboard_writer_generates_offline_html(tmp_path):
@@ -20,6 +20,17 @@ def test_research_dashboard_writer_generates_offline_html(tmp_path):
             article_type="research-article",
             citation_count=20,
             citation_source="openalex",
+            references=[
+                ReferenceRecord(
+                    title="Core cited reference",
+                    journal="Nature",
+                    publish_date="2020",
+                    source_article_count=2,
+                    relevance_score=0.7,
+                    value_score=0.8,
+                    journal_tier="top_general",
+                )
+            ],
         ),
         ArticleRecord(
             title="Mechanism paper",
@@ -42,10 +53,16 @@ def test_research_dashboard_writer_generates_offline_html(tmp_path):
     assert path.name == "research_dashboard.html"
     assert path.parent.name == "visualization"
     assert "Research Dashboard" in html
+    assert "研究画像摘要" in html
     assert "研究子领域分布" in html
+    assert "子领域档案" in html
+    assert "推荐阅读路径" in html
     assert "年份趋势" in html
     assert "关键论文" in html
+    assert "核心引用文献" in html
+    assert "20引" in html
     assert "Biomarker paper" in html
+    assert "Core cited reference" in html
     assert "Topic_Biomarker" in html
     assert "https://cdn" not in html
     assert "<script id=\"dashboard-data\"" in html
@@ -69,3 +86,4 @@ def test_research_dashboard_cli_adapter_runs(monkeypatch, tmp_path):
     assert run_from_args(Args()) == 0
     assert captured["out_dir"].name == "图表"
     assert captured["top_n"] == 6
+

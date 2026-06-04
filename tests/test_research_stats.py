@@ -3,8 +3,8 @@
 import csv
 import json
 
-from refchaser.paper_models import ArticleRecord
-from refchaser.research_stats import (
+from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.research_stats import (
     ResearchStatsWriter,
     citation_bucket,
     collaboration_type,
@@ -12,6 +12,7 @@ from refchaser.research_stats import (
     run_from_args,
     team_label,
 )
+from litsurveygrp.paper_models import ReferenceRecord
 
 
 def test_extract_year_accepts_common_date_formats():
@@ -52,6 +53,21 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
             subdomain="Topic_Biomarker",
             citation_count=30,
             citation_source="openalex",
+            classification_confidence=0.8,
+            references=[
+                ReferenceRecord(
+                    title="Foundational biomarker reference",
+                    doi="10.1/ref",
+                    journal="Nature",
+                    publish_date="2020",
+                    citation_count=200,
+                    relevance_score=0.7,
+                    value_score=0.8,
+                    journal_tier="top_general",
+                    source_article_count=2,
+                    source_article_titles=["Highly cited biomarker paper"],
+                )
+            ],
         ),
         ArticleRecord(
             title="Review on healthspan",
@@ -71,8 +87,13 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
 
     outputs = writer.write()
     summary = json.loads(outputs["summary"].read_text(encoding="utf-8"))
+    profile = json.loads(outputs["research_profile"].read_text(encoding="utf-8"))
 
     assert outputs["subdomains"].name == "subdomain_stats.csv"
+    assert outputs["research_profile"].name == "research_profile.json"
+    assert outputs["topic_profiles"].name == "topic_profiles.csv"
+    assert outputs["paper_recommendations"].name == "paper_recommendations.csv"
+    assert outputs["reference_insights"].name == "reference_insights.csv"
     assert outputs["top_papers"].name == "top_papers.csv"
     assert outputs["journals"].name == "journal_stats.csv"
     assert outputs["subdomain_years"].name == "subdomain_year_trend.csv"
@@ -84,9 +105,18 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
     assert summary["unique_authors"] == 3
     assert summary["unique_institutions"] == 3
     assert summary["total_citations"] == 42
+    assert summary["median_citations"] == 21.0
+    assert summary["review_papers"] == 1
+    assert summary["research_papers"] == 1
+    assert summary["reference_pool_size"] == 1
     assert "download_status" not in summary
+    assert profile["topic_profiles"][0]["subdomain"] == "Topic_Biomarker"
+    assert profile["core_references"][0]["title"] == "Foundational biomarker reference"
 
     top_rows = read_csv(outputs["top_papers"])
+    topic_rows = read_csv(outputs["topic_profiles"])
+    recommendation_rows = read_csv(outputs["paper_recommendations"])
+    reference_rows = read_csv(outputs["reference_insights"])
     author_rows = read_csv(outputs["authors"])
     team_rows = read_csv(outputs["teams"])
     journal_rows = read_csv(outputs["journals"])
@@ -96,6 +126,11 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
 
     assert top_rows[0]["title"] == "Highly cited biomarker paper"
     assert top_rows[0]["citation_source"] == "openalex"
+    assert topic_rows[0]["representative_keywords"]
+    assert recommendation_rows[0]["research_value_score"]
+    assert recommendation_rows[0]["journal_tier"] == "top_field"
+    assert reference_rows[0]["title"] == "Foundational biomarker reference"
+    assert reference_rows[0]["source_article_count"] == "2"
     assert author_rows[0]["author"] == "Alice"
     assert author_rows[0]["paper_count"] == "2"
     assert team_rows[0]["team"] == "Institute A"
@@ -129,3 +164,4 @@ def test_research_stats_cli_adapter_runs(monkeypatch, tmp_path):
 def read_csv(path):
     with open(path, "r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
+

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from refchaser.citation_exporter import (
+from litsurveygrp.citation_exporter import (
     ReferenceRelevanceScorer,
     ReferenceRisExporter,
     RisExporter,
@@ -12,7 +12,7 @@ from refchaser.citation_exporter import (
     run_from_args,
     validate_max_records,
 )
-from refchaser.paper_models import ArticleRecord, ReferenceRecord
+from litsurveygrp.paper_models import ArticleRecord, ReferenceRecord
 
 
 def test_ris_exporter_default_output_path(tmp_path):
@@ -266,3 +266,4 @@ def test_reference_ris_cli_adapter_runs(monkeypatch, tmp_path):
     assert run_from_args(Args()) == 0
     assert captured["threshold"] == 0.25
     assert captured["max_records"] == 10
+

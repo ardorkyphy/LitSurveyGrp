@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from refchaser.__main__ import build_parser
+from litsurveygrp.__main__ import build_parser
 
 
 def test_cli_has_mvp_subcommands():
@@ -123,6 +123,45 @@ def test_cli_stats_arguments():
     assert args.top == 10
 
 
+def test_cli_download_pdfs_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "download-pdfs",
+        "--manifest",
+        r"D:\中文路径\results\classified_manifest.json",
+        "--papers-dir",
+        r"D:\中文路径\papers",
+        "--results-dir",
+        r"D:\中文路径\results",
+        "--top",
+        "12",
+        "--min-value-score",
+        "0.45",
+        "--download-workers",
+        "4",
+        "--timeout",
+        "9",
+        "--require-doi",
+        "--include-existing",
+        "--no-retry-oa-resolution",
+        "--out-manifest-name",
+        "custom_pdf_manifest.json",
+    ])
+
+    assert args.command == "download-pdfs"
+    assert args.manifest.endswith("classified_manifest.json")
+    assert args.papers_dir.endswith("papers")
+    assert args.results_dir.endswith("results")
+    assert args.top == 12
+    assert args.min_value_score == 0.45
+    assert args.download_workers == 4
+    assert args.timeout == 9
+    assert args.require_doi is True
+    assert args.include_existing is True
+    assert args.no_retry_oa_resolution is True
+    assert args.out_manifest_name == "custom_pdf_manifest.json"
+
+
 def test_cli_visualize_arguments():
     parser = build_parser()
     args = parser.parse_args([
@@ -151,6 +190,9 @@ def test_cli_run_survey_arguments():
         "2026",
         "--limit",
         "50",
+        "--download-workers",
+        "4",
+        "--metadata-only",
         "--papers-dir",
         r"D:\中文路径\papers",
         "--results-dir",
@@ -173,6 +215,8 @@ def test_cli_run_survey_arguments():
     assert args.journal is None
     assert args.year == 2026
     assert args.limit == 50
+    assert args.download_workers == 4
+    assert args.download_pdfs is False
     assert args.papers_dir.endswith("papers")
     assert args.results_dir.endswith("results")
     assert args.sources == ["openalex", "crossref"]
@@ -220,3 +264,4 @@ def test_cli_analyze_references_arguments():
     assert args.require_reference_doi is True
     assert args.reference_query == "immune aging"
     assert args.reference_sources == ["openalex", "crossref"]
+

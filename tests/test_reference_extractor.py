@@ -2,8 +2,8 @@
 
 import json
 
-from refchaser.paper_models import ArticleRecord
-from refchaser.reference_extractor import PdfReferenceExtractor, ReferenceExtractionService, run_from_args
+from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.reference_extractor import PdfReferenceExtractor, ReferenceExtractionService, run_from_args
 
 
 REFERENCE_TEXT = """
@@ -122,3 +122,4 @@ def test_reference_extraction_cli_adapter_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(ReferenceExtractionService, "run", lambda self: [])
 
     assert run_from_args(Args()) == 0
+

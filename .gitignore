@@ -19,16 +19,21 @@ dist/
 # Local environment
 .env
 .env.*
+!.env.example
 
-# Refchaser generated outputs
+# LitSurveyGrp generated outputs
 papers/
 results/
 article_manifest.json
 multi_journal_manifest.json
 classified_manifest.json
 enriched_manifest.json
+pdf_downloaded_manifest.json
 download_report.csv
 multi_journal_download_report.csv
+pdf_download_report.csv
+pdf_download_ranking.csv
+pdf_download_summary.json
 basic_stats.json
 source_papers.ris
 reference_papers.ris
@@ -36,3 +41,10 @@ all_papers/
 classified/
 stats/
 visualization/
+references/
+
+# Local model/cache data
+.cache/
+models/
+*.pdf
+*.tmp

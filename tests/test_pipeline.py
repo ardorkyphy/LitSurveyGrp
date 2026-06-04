@@ -4,15 +4,24 @@ import json
 
 import pytest
 
-from refchaser.paper_models import ArticleRecord
-from refchaser.pipeline import SurveyPipelineService, run_from_args
+from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.pipeline import SurveyPipelineService, run_from_args
 
 
 def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_path):
     calls = []
 
     def fake_download(self):
-        calls.append(("download", self.output_dir, self.results_dir, self.journals, self.limit, self.article_filter))
+        calls.append((
+            "download",
+            self.output_dir,
+            self.results_dir,
+            self.journals,
+            self.limit,
+            self.article_filter,
+            self.download_workers,
+            self.download_pdfs,
+        ))
         self.results_dir.mkdir(parents=True, exist_ok=True)
         article = ArticleRecord(title="Aging paper", doi="10.1/test")
         (self.results_dir / "article_manifest.json").write_text(
@@ -54,12 +63,12 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
         (self.out_dir / "reference_manifest.json").write_text("[]", encoding="utf-8")
         return []
 
-    monkeypatch.setattr("refchaser.pipeline.MultiJournalDownloadService.run", fake_download)
-    monkeypatch.setattr("refchaser.pipeline.MetadataEnrichmentService.run", fake_enrich)
-    monkeypatch.setattr("refchaser.pipeline.PaperClassificationService.run", fake_classify)
-    monkeypatch.setattr("refchaser.pipeline.ResearchStatsWriter.write", fake_stats)
-    monkeypatch.setattr("refchaser.pipeline.ResearchDashboardWriter.write", fake_dashboard)
-    monkeypatch.setattr("refchaser.pipeline.ReferenceAnalysisService.run", fake_reference_analysis)
+    monkeypatch.setattr("litsurveygrp.pipeline.MultiJournalDownloadService.run", fake_download)
+    monkeypatch.setattr("litsurveygrp.pipeline.MetadataEnrichmentService.run", fake_enrich)
+    monkeypatch.setattr("litsurveygrp.pipeline.PaperClassificationService.run", fake_classify)
+    monkeypatch.setattr("litsurveygrp.pipeline.ResearchStatsWriter.write", fake_stats)
+    monkeypatch.setattr("litsurveygrp.pipeline.ResearchDashboardWriter.write", fake_dashboard)
+    monkeypatch.setattr("litsurveygrp.pipeline.ReferenceAnalysisService.run", fake_reference_analysis)
 
     service = SurveyPipelineService(
         papers_dir=tmp_path / "papers",
@@ -68,6 +77,8 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
         from_year=2024,
         to_year=2026,
         limit=50,
+        download_workers=3,
+        download_pdfs=False,
         keywords=["senescence", "immune"],
         article_types=["Article"],
         min_citations=2,
@@ -97,6 +108,8 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     assert calls[0][3][0].provider == "openalex-search"
     assert calls[0][3][0].query == "LLM causal discovery"
     assert calls[0][4] == 50
+    assert calls[0][6] == 3
+    assert calls[0][7] is False
     assert calls[0][5].keywords == ["senescence", "immune"]
     assert calls[0][5].article_types == ["Article"]
     assert calls[0][5].min_citations == 2
@@ -125,7 +138,7 @@ def test_survey_pipeline_can_skip_optional_steps(monkeypatch, tmp_path):
         (self.results_dir / "download_report.csv").write_text("title\n", encoding="utf-8")
         return [article]
 
-    monkeypatch.setattr("refchaser.pipeline.MultiJournalDownloadService.run", fake_download)
+    monkeypatch.setattr("litsurveygrp.pipeline.MultiJournalDownloadService.run", fake_download)
 
     service = SurveyPipelineService(
         papers_dir=tmp_path / "papers",
@@ -175,6 +188,8 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         limit = 5
         per_journal_limit = 20
         download_timeout = 7
+        download_workers = 4
+        download_pdfs = False
         pdf_only_candidates = True
         dry_run = True
         keyword = ["aging", "senescence"]
@@ -213,6 +228,8 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
         captured["journal_specs"] = self.journal_specs
         captured["query"] = self.query
         captured["limit"] = self.limit
+        captured["download_workers"] = self.download_workers
+        captured["download_pdfs"] = self.download_pdfs
         captured["article_filter"] = self.article_filter
         captured["filter_sources"] = self.filter_sources
         captured["request_interval"] = self.request_interval
@@ -232,6 +249,8 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
     assert captured["journal_specs"] == ["nature-aging"]
     assert captured["query"] == "LLM causal discovery"
     assert captured["limit"] == 5
+    assert captured["download_workers"] == 4
+    assert captured["download_pdfs"] is False
     assert captured["article_filter"].keywords == ["aging", "senescence"]
     assert captured["article_filter"].article_types == ["Article"]
     assert captured["article_filter"].min_citations == 10
@@ -245,3 +264,4 @@ def test_pipeline_cli_adapter_runs(monkeypatch, tmp_path):
     assert captured["max_reference_downloads"] == 6
     assert captured["reference_sources"] == ["openalex"]
     assert captured["clean_existing"] is True
+

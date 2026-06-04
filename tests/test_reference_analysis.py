@@ -3,8 +3,8 @@
 import csv
 import json
 
-from refchaser.paper_models import ArticleRecord, ReferenceRecord
-from refchaser.reference_analysis import (
+from litsurveygrp.paper_models import ArticleRecord, ReferenceRecord
+from litsurveygrp.reference_analysis import (
     JournalTierScorer,
     ReferenceAnalysisService,
     ReferenceMetadataEnricher,
@@ -265,3 +265,4 @@ def test_reference_key_prefers_doi():
 def read_csv(path):
     with open(path, "r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
+

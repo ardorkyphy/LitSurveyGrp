@@ -2,7 +2,7 @@
 
 import json
 
-from refchaser.paper_classifier import (
+from litsurveygrp.paper_classifier import (
     BasicStatsWriter,
     ClusteredPaperClassifier,
     PaperClassificationService,
@@ -10,7 +10,7 @@ from refchaser.paper_classifier import (
     SentenceTransformerEmbedder,
     run_from_args,
 )
-from refchaser.paper_models import ArticleRecord
+from litsurveygrp.paper_models import ArticleRecord
 
 
 class FakeSpecterEmbedder:
@@ -187,3 +187,4 @@ def test_classification_cli_adapter_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(PaperClassificationService, "run", lambda self: [])
 
     assert run_from_args(Args()) == 0
+

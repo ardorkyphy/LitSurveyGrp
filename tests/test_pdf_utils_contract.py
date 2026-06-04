@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 
+import shutil
 from pathlib import Path
 
-from refchaser.paper_models import ArticleRecord
-from refchaser.pdf_utils import HtmlXmlToPdfConverter, OpenAccessPdfResolver, PdfDownloader, PdfPathBuilder
+from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.pdf_utils import HtmlXmlToPdfConverter, OpenAccessPdfResolver, PdfDownloader, PdfPathBuilder
 
 
 class FakeResponse:
@@ -242,6 +243,39 @@ def test_download_saves_only_valid_pdf(tmp_path):
     assert article.local_pdf_path.name == "（2026，NA）中文论文（Zhang，Institute of Aging）.pdf"
 
 
+def test_save_if_complete_retries_short_lived_windows_file_lock(monkeypatch, tmp_path):
+    article = ArticleRecord(
+        title="Locked temp paper",
+        doi="10.1/locked",
+        journal="Nature Aging",
+        publish_date="2026",
+    )
+    temp = tmp_path / ".tmp" / "locked.tmp"
+    temp.parent.mkdir()
+    temp.write_bytes(b"%PDF- abstract references")
+    downloader = PdfDownloader(
+        tmp_path,
+        file_operation_retries=1,
+        file_operation_retry_delay=0,
+    )
+    calls = {"count": 0}
+    real_move = shutil.move
+
+    def flaky_move(source, destination):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError("locked")
+        return real_move(source, destination)
+
+    monkeypatch.setattr("litsurveygrp.pdf_utils.shutil.move", flaky_move)
+
+    saved = downloader.save_if_complete(temp, article)
+
+    assert calls["count"] == 2
+    assert saved.pdf_status == "complete"
+    assert saved.local_pdf_path.exists()
+
+
 def test_download_resolves_missing_pdf_url_from_open_access_resolver(tmp_path):
     content = b"%PDF-" + b"Abstract " + b"x" * 300 + b" References"
     session = FakeSession([
@@ -418,3 +452,4 @@ def test_download_cleans_old_semantic_variant_when_final_exists(tmp_path):
     assert result.local_pdf_path == final_path
     assert final_path.exists()
     assert not old_variant.exists()
+

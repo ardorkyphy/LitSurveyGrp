@@ -2,7 +2,7 @@
 
 import json
 
-from refchaser.enrichment.metadata_enrichment import (
+from litsurveygrp.enrichment.metadata_enrichment import (
     CrossrefMetadataResolver,
     DEFAULT_REQUEST_INTERVAL_SECONDS,
     MetadataEnrichmentService,
@@ -11,7 +11,7 @@ from refchaser.enrichment.metadata_enrichment import (
     openalex_abstract,
     run_from_args,
 )
-from refchaser.paper_models import ArticleRecord
+from litsurveygrp.paper_models import ArticleRecord
 
 
 class FakeResponse:
@@ -267,3 +267,4 @@ def test_metadata_enrichment_tie_breaks_citation_sources_by_priority():
         "semantic-scholar": 5,
     }
     assert article.citation_policy == "max_available"
+

@@ -2,7 +2,7 @@
 
 import pytest
 
-from refchaser.cleanup import GeneratedOutputCleaner, run_from_args
+from litsurveygrp.cleanup import GeneratedOutputCleaner, run_from_args
 
 
 def test_cleaner_deletes_default_generated_dirs(tmp_path):
@@ -58,3 +58,4 @@ def test_cleanup_cli_adapter_prints_results(capsys, tmp_path, monkeypatch):
 
     assert "would_delete" in output
     assert "results" in output
+

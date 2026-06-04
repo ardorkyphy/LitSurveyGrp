@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-from refchaser.filters import ArticleFilter, extract_year, keyword_matches, normalize
-from refchaser.paper_models import ArticleRecord
+from litsurveygrp.filters import ArticleFilter, extract_year, keyword_matches, normalize
+from litsurveygrp.paper_models import ArticleRecord
 
 
 def test_article_filter_requires_all_keywords():
@@ -56,3 +56,4 @@ def test_keyword_matches_common_research_aliases():
 
     assert keyword_matches("LLM", text)
     assert keyword_matches("casual discovery", text)
+
