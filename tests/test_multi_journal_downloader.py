@@ -272,6 +272,7 @@ def test_openalex_search_provider_builds_full_work_search_params():
     params = provider.build_params()
 
     assert params["search"] == "LLM causal discovery"
+    assert "sort" not in params
     assert "primary_location.source.issn" not in params["filter"]
     assert "type:article" in params["filter"]
     assert "from_publication_date:2021-01-01" in params["filter"]

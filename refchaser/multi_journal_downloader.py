@@ -290,6 +290,7 @@ class OpenAlexSearchProvider(OpenAlexJournalProvider):
         ]
         params["filter"] = ",".join(filters)
         params["search"] = self.query
+        params.pop("sort", None)
         return params
 
 
