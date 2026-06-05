@@ -131,6 +131,8 @@ results/
   pdf_download_report.csv
   pdf_download_summary.json
   download_report.csv
+  run_monitor.html
+  run_status.json
   pipeline_report.json
   stats/
   visualization/
@@ -148,12 +150,24 @@ Important files:
 - `pdf_download_ranking.csv`: ranked PDF-download candidates and reasons.
 - `pdf_downloaded_manifest.json`: manifest after top-ranked PDF download.
 - `references/reference_manifest.json`: ranked cited-reference paper pool.
+- `run_monitor.html`: auto-refreshing run monitor for long jobs.
+- `run_status.json`: machine-readable current stage, progress, last item, and
+  recent events.
 
 The main dashboard is:
 
 ```text
 results/visualization/research_dashboard.html
 ```
+
+During long runs, open this file in a browser to see what the tool is doing:
+
+```text
+results/run_monitor.html
+```
+
+It refreshes automatically and shows the active stage, processed record count,
+last paper, current provider/API source, and recent errors or warnings.
 
 ## Notes
 

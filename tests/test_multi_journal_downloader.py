@@ -556,6 +556,29 @@ def test_multi_journal_service_can_collect_metadata_without_pdf_download(tmp_pat
     assert [item["title"] for item in saved] == ["Metadata one", "Metadata two"]
 
 
+def test_multi_journal_service_writes_run_monitor(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path / "papers",
+        results_dir=tmp_path / "results",
+        journals=[JournalConfig("Nature Aging", "nataging")],
+        download_pdfs=False,
+        progress_write_interval=1,
+    )
+    service.iter_articles = lambda: iter([
+        ArticleRecord(title="Monitored paper", doi="10/monitor"),
+    ])
+
+    service.run()
+
+    status = json.loads((tmp_path / "results" / "run_status.json").read_text(encoding="utf-8"))
+    html = (tmp_path / "results" / "run_monitor.html").read_text(encoding="utf-8")
+
+    assert status["status"] == "completed"
+    assert status["processed"] == 1
+    assert status["current_item"] == "Monitored paper"
+    assert "Monitored paper" in html
+
+
 def test_multi_journal_service_can_download_with_parallel_workers(tmp_path):
     service = MultiJournalDownloadService(
         output_dir=tmp_path / "papers",

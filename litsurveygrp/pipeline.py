@@ -16,6 +16,7 @@ from litsurveygrp.multi_journal_downloader import JournalConfig, MultiJournalDow
 from litsurveygrp.paper_classifier import PaperClassificationService
 from litsurveygrp.reference_analysis import ReferenceAnalysisService
 from litsurveygrp.research_stats import ResearchStatsWriter
+from litsurveygrp.run_monitor import RunMonitor
 from litsurveygrp.visualization import ResearchDashboardWriter
 
 
@@ -225,6 +226,7 @@ class SurveyPipelineService:
                 clean_existing=clean_existing,
             )
         self.article_filter = self.config.build_article_filter()
+        self.monitor = RunMonitor(self.config.results_dir)
         self._sync_legacy_attributes()
 
     def _sync_legacy_attributes(self) -> None:
@@ -274,6 +276,16 @@ class SurveyPipelineService:
             self._clean_generated_dir(self.results_dir)
         self.papers_dir.mkdir(parents=True, exist_ok=True)
         self.results_dir.mkdir(parents=True, exist_ok=True)
+        self.monitor.start(
+            "LitSurveyGrp survey pipeline",
+            "Running literature survey workflow",
+            metrics={
+                "journals": ", ".join(self.journal_specs or []),
+                "query": self.query,
+                "download_pdfs": self.download_pdfs,
+                "metadata_sources": ", ".join(self.metadata_sources or list(DEFAULT_SOURCES)),
+            },
+        )
 
         outputs = SurveyPipelineOutputs(
             papers_dir=self.papers_dir,
@@ -287,15 +299,18 @@ class SurveyPipelineService:
         if self.classify_papers:
             current_manifest = self._classify(current_manifest, outputs)
         if self.write_stats:
+            self.monitor.update("stats", "Writing research statistics", current_item=str(current_manifest))
             outputs.stats_dir = self.results_dir / "stats"
             ResearchStatsWriter(current_manifest, out_dir=outputs.stats_dir, top_n=self.top_n).write()
         if self.write_visualization:
+            self.monitor.update("visualize", "Writing offline research dashboard", current_item=str(current_manifest))
             outputs.dashboard = ResearchDashboardWriter(
                 current_manifest,
                 out_dir=self.results_dir / "visualization",
                 top_n=self.top_n,
             ).write()
         if self.analyze_references:
+            self.monitor.update("references", "Analyzing cited references", current_item=str(current_manifest))
             outputs.references_dir = self.reference_out_dir or self.results_dir / "references"
             ReferenceAnalysisService(
                 current_manifest,
@@ -313,9 +328,11 @@ class SurveyPipelineService:
                 sentence_model=self.sentence_model,
             ).run()
         outputs.pipeline_report = self.write_pipeline_report(outputs)
+        self.monitor.finish("completed", f"Pipeline finished: {outputs.final_manifest}")
         return outputs
 
     def _download(self, outputs: SurveyPipelineOutputs) -> Path:
+        self.monitor.update("download", "Collecting paper records", current_item=", ".join(self.journal_specs or []))
         service = MultiJournalDownloadService(
             output_dir=self.papers_dir,
             results_dir=self.results_dir,
@@ -334,6 +351,7 @@ class SurveyPipelineService:
             pdf_only_candidates=self.pdf_only_candidates,
             article_filter=self.article_filter if self.article_filter.has_criteria() else None,
             prefilter_enricher=self.build_prefilter_enricher(),
+            monitor=self.monitor,
         )
         service.run()
         return outputs.download_manifest
@@ -356,6 +374,7 @@ class SurveyPipelineService:
         )
 
     def _enrich(self, manifest: Path, outputs: SurveyPipelineOutputs) -> Path:
+        self.monitor.update("enrich", "Starting metadata enrichment", current_item=str(manifest))
         outputs.enriched_manifest = self.results_dir / "enriched_manifest.json"
         MetadataEnrichmentService(
             manifest,
@@ -363,10 +382,12 @@ class SurveyPipelineService:
             output_path=outputs.enriched_manifest,
             timeout=self.metadata_timeout,
             request_interval=self.request_interval,
+            monitor=self.monitor,
         ).run()
         return outputs.enriched_manifest
 
     def _classify(self, manifest: Path, outputs: SurveyPipelineOutputs) -> Path:
+        self.monitor.update("classify", "Classifying papers into research topics", current_item=str(manifest))
         outputs.classified_manifest = self.results_dir / "classified_manifest.json"
         PaperClassificationService(
             manifest,

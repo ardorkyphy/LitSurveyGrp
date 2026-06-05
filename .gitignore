@@ -34,6 +34,8 @@ multi_journal_download_report.csv
 pdf_download_report.csv
 pdf_download_ranking.csv
 pdf_download_summary.json
+run_monitor.html
+run_status.json
 basic_stats.json
 source_papers.ris
 reference_papers.ris

@@ -19,6 +19,7 @@ from litsurveygrp.nature_aging_downloader import NatureJournalCrawler
 from litsurveygrp.paper_models import ArticleRecord
 from litsurveygrp.pdf_utils import PdfDownloader
 from litsurveygrp.provider_registry import JournalProviderRegistry, ProviderBuildContext
+from litsurveygrp.run_monitor import RunMonitor
 
 
 @dataclass(frozen=True)
@@ -500,6 +501,7 @@ class MultiJournalDownloadService:
         download_workers: int = 1,
         progress_write_interval: int = 10,
         download_pdfs: bool = True,
+        monitor: RunMonitor | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.results_dir = Path(results_dir) if results_dir else self.output_dir
@@ -522,9 +524,19 @@ class MultiJournalDownloadService:
         self.download_workers = max(1, int(download_workers or 1))
         self.progress_write_interval = max(1, int(progress_write_interval or 1))
         self.download_pdfs = bool(download_pdfs)
+        self.monitor = monitor or RunMonitor(self.results_dir)
 
     def run(self) -> list[ArticleRecord]:
         """Discover and download articles across all configured journals."""
+        self.monitor.start(
+            "Paper discovery",
+            "Discovering papers and collecting provider metadata",
+            metrics={
+                "journals": ", ".join(journal.name for journal in self.journals),
+                "download_pdfs": self.download_pdfs,
+                "download_workers": self.download_workers,
+            },
+        )
         if self.download_workers > 1 and not self.dry_run and self.download_pdfs:
             return self.run_parallel_downloads()
         return self.run_serial_downloads()
@@ -547,6 +559,7 @@ class MultiJournalDownloadService:
                 break
         self.write_manifest(articles)
         self.write_report(articles)
+        self.monitor.finish("completed", f"Discovery finished with {len(articles)} records")
         return articles
 
     def run_parallel_downloads(self) -> list[ArticleRecord]:
@@ -602,6 +615,7 @@ class MultiJournalDownloadService:
             executor.shutdown(wait=True, cancel_futures=True)
         self.write_manifest(articles)
         self.write_report(articles)
+        self.monitor.finish("completed", f"Discovery finished with {len(articles)} records")
         return articles
 
     def prepare_article_for_processing(self, article: ArticleRecord) -> tuple[ArticleRecord | None, bool]:
@@ -651,6 +665,20 @@ class MultiJournalDownloadService:
     def record_progress(self, articles: list[ArticleRecord], article: ArticleRecord) -> None:
         """Append one processed article and persist partial outputs."""
         articles.append(article)
+        self.monitor.update(
+            stage="discover",
+            message=f"Processed {len(articles)} paper records",
+            processed=len(articles),
+            current_item=article.title or article.doi or article.article_url,
+            metrics={
+                "complete_pdfs": sum(
+                    bool(item.pdf_status == "complete" and item.local_pdf_path)
+                    for item in articles
+                ),
+                "metadata_only": sum(item.download_status == "metadata_only" for item in articles),
+                "last_status": f"{article.download_status}/{article.pdf_status}",
+            },
+        )
         if len(articles) % self.progress_write_interval == 0:
             self.write_manifest(articles)
             self.write_report(articles)
@@ -670,13 +698,30 @@ class MultiJournalDownloadService:
         """Yield discovered articles from each configured journal."""
         for journal in self.journals:
             source = self.build_source(journal)
+            self.monitor.update(
+                stage="discover",
+                message=f"Discovering {journal.name} with {source.__class__.__name__}",
+                current_item=journal.name,
+                metrics={"provider": source.__class__.__name__},
+            )
             try:
                 articles = source.discover()
             except Exception as exc:
                 self.source_errors.append(f"{journal.name}:{source.__class__.__name__}:{exc.__class__.__name__}")
+                self.monitor.add_event("source_error", self.source_errors[-1])
+                self.monitor.write()
                 continue
             if getattr(source, "errors", None):
                 self.source_errors.extend(f"{journal.name}:{error}" for error in source.errors)
+                for error in source.errors:
+                    self.monitor.add_event("source_warning", f"{journal.name}:{error}")
+                self.monitor.write()
+            self.monitor.update(
+                stage="discover",
+                message=f"Discovered {len(articles)} records from {journal.name}",
+                total=len(articles),
+                current_item=journal.name,
+            )
             for article in articles:
                 yield article
 

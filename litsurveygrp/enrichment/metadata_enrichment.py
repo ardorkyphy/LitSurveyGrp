@@ -17,6 +17,7 @@ from urllib.parse import quote
 import requests
 
 from litsurveygrp.paper_models import ArticleRecord
+from litsurveygrp.run_monitor import RunMonitor
 
 
 DEFAULT_SOURCES = ["openalex", "semantic-scholar", "europe-pmc", "crossref"]
@@ -238,6 +239,7 @@ class MetadataEnrichmentService:
         resolvers: list | None = None,
         sleep_func=None,
         monotonic_func=None,
+        monitor: RunMonitor | None = None,
     ):
         self.manifest_path = Path(manifest_path)
         load_local_env(self.manifest_path.parent)
@@ -250,6 +252,7 @@ class MetadataEnrichmentService:
         self.sleep_func = sleep_func or time.sleep
         self.monotonic_func = monotonic_func or time.monotonic
         self._last_request_at: float | None = None
+        self.monitor = monitor or RunMonitor(self.output_path.parent)
 
     def build_resolvers(self) -> list:
         registry = {
@@ -266,8 +269,40 @@ class MetadataEnrichmentService:
         return resolvers
 
     def run(self) -> list[ArticleRecord]:
-        articles = [self.enrich_article(article) for article in self.load_manifest()]
+        source_articles = self.load_manifest()
+        self.monitor.start(
+            "Metadata enrichment",
+            "Enriching paper metadata from open scholarly APIs",
+            metrics={
+                "sources": ", ".join(self.sources),
+                "request_interval": self.request_interval,
+                "total_records": len(source_articles),
+            },
+        )
+        articles = []
+        for index, article in enumerate(source_articles, start=1):
+            self.monitor.update(
+                stage="enrich",
+                message=f"Enriching record {index} of {len(source_articles)}",
+                processed=index - 1,
+                total=len(source_articles),
+                current_item=article.title or article.doi,
+            )
+            articles.append(self.enrich_article(article))
+            self.monitor.update(
+                stage="enrich",
+                message=f"Enriched record {index} of {len(source_articles)}",
+                processed=index,
+                total=len(source_articles),
+                current_item=article.title or article.doi,
+                metrics={
+                    "last_enrichment_status": article.enrichment_status,
+                    "last_metadata_sources": ", ".join(article.metadata_sources),
+                    "last_citation_source": article.citation_source,
+                },
+            )
         self.write_manifest(articles)
+        self.monitor.finish("completed", f"Metadata enrichment finished with {len(articles)} records")
         return articles
 
     def load_manifest(self) -> list[ArticleRecord]:
@@ -285,11 +320,19 @@ class MetadataEnrichmentService:
         found_sources = []
         errors = []
         for resolver in self.resolvers:
+            self.monitor.update(
+                stage="enrich",
+                message=f"Calling {resolver.name}",
+                current_item=article.title or article.doi,
+                metrics={"current_metadata_source": resolver.name},
+            )
             try:
                 self.throttle()
                 metadata = self._clean_metadata(resolver.resolve(article))
             except Exception as exc:
                 errors.append(f"{resolver.name}:{exc.__class__.__name__}")
+                self.monitor.add_event("metadata_error", f"{resolver.name}: {exc.__class__.__name__}")
+                self.monitor.write()
                 continue
             if not metadata:
                 continue
