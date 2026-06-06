@@ -49,6 +49,10 @@ references/
 */papers/
 */results/
 */agent_inputs/
+results_*/
+papers_*/
+ai_in_neuroscience/
+quantum_for_ai/
 
 # Local model/cache data
 .cache/
