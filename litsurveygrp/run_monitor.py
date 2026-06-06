@@ -3,6 +3,8 @@
 
 import html
 import json
+import time
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -203,3 +205,94 @@ class RunMonitor:
 
     def escape(self, value: Any) -> str:
         return html.escape(str(value if value is not None else ""))
+
+
+class RunMonitorViewer:
+    """CLI helper for opening or watching a monitor output directory."""
+
+    def __init__(
+        self,
+        results_dir: Path,
+        open_browser: bool = False,
+        watch: bool = False,
+        interval: int = 5,
+        once: bool = False,
+        browser_open_func=None,
+        sleep_func=None,
+        print_func=None,
+    ):
+        self.results_dir = Path(results_dir)
+        self.open_browser = open_browser
+        self.watch = watch
+        self.interval = max(1, int(interval or 5))
+        self.once = once
+        self.browser_open_func = browser_open_func or webbrowser.open
+        self.sleep_func = sleep_func or time.sleep
+        self.print_func = print_func or print
+        self.monitor = RunMonitor(self.results_dir)
+
+    @property
+    def status_path(self) -> Path:
+        return self.monitor.status_path
+
+    @property
+    def html_path(self) -> Path:
+        return self.monitor.html_path
+
+    def run(self) -> int:
+        self.ensure_monitor_files()
+        self.print_func(f"Monitor HTML: {self.html_path.resolve()}")
+        self.print_func(f"Monitor JSON: {self.status_path.resolve()}")
+        if self.open_browser:
+            self.browser_open_func(self.html_path.resolve().as_uri())
+        if self.watch or self.once:
+            self.watch_status()
+        return 0
+
+    def ensure_monitor_files(self) -> None:
+        if not self.status_path.exists():
+            self.monitor.start("LitSurveyGrp monitor", "Waiting for a run to write status")
+            self.monitor.finish("idle", "No active run status found yet")
+        elif not self.html_path.exists():
+            self.monitor.state = self.load_status()
+            self.monitor.write()
+
+    def watch_status(self) -> None:
+        while True:
+            state = self.load_status()
+            self.print_func(self.format_status(state))
+            if self.once:
+                return
+            self.sleep_func(self.interval)
+
+    def load_status(self) -> dict:
+        if not self.status_path.exists():
+            return {}
+        with open(self.status_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def format_status(self, state: dict) -> str:
+        if not state:
+            return "No run status found."
+        total = state.get("total")
+        processed = state.get("processed", 0)
+        progress = f"{processed}/{total}" if total else str(processed)
+        return (
+            f"[{state.get('updated_at', '')}] "
+            f"{state.get('status', '')} "
+            f"{state.get('stage', '')} "
+            f"processed={progress} "
+            f"current={state.get('current_item', '')} "
+            f"message={state.get('message', '')}"
+        )
+
+
+def run_from_args(args) -> int:
+    viewer = RunMonitorViewer(
+        Path(getattr(args, "results_dir", "results")),
+        open_browser=getattr(args, "open", False),
+        watch=getattr(args, "watch", False),
+        interval=getattr(args, "interval", 5),
+        once=getattr(args, "once", False),
+    )
+    return viewer.run()

@@ -14,8 +14,8 @@ from litsurveygrp.paper_models import ArticleRecord, ReferenceRecord
 
 STOPWORDS = {
     "the", "and", "for", "with", "from", "that", "this", "into", "using", "both", "only",
-    "aging", "age", "aged", "disease", "paper", "study", "article", "analysis", "a", "an",
-    "of", "in", "to", "on", "by", "as", "is", "are", "via", "or",
+    "paper", "study", "article", "analysis", "research", "method", "methods", "result", "results",
+    "a", "an", "of", "in", "to", "on", "by", "as", "is", "are", "via", "or",
 }
 
 
@@ -40,9 +40,9 @@ class ReferenceRelevanceScorer:
             return reference
         overlap = sorted(source_tokens & reference_tokens)
         coverage = len(overlap) / max(1, min(len(source_tokens), len(reference_tokens)))
-        score = self._score_with_domain_boost(coverage, overlap, reference_tokens)
+        score = self._score_with_profile_boost(coverage, overlap, source_tokens, reference_tokens)
         reference.relevance_score = round(score, 3)
-        reference.relevance_reason = "shared terms: " + ", ".join(overlap[:10]) if overlap else "no shared domain terms"
+        reference.relevance_reason = "shared terms: " + ", ".join(overlap[:10]) if overlap else "no shared profile terms"
         return reference
 
     def is_relevant(self, source: ArticleRecord, reference: ReferenceRecord) -> bool:
@@ -56,15 +56,15 @@ class ReferenceRelevanceScorer:
                 tokens.add(token)
         return tokens
 
-    def _score_with_domain_boost(self, coverage: float, overlap: list[str], reference_tokens: set[str]) -> float:
-        domain_terms = {
-            "alzheimer", "dementia", "apoe", "amyloid", "tau", "neurodegeneration",
-            "aging", "ageing", "longevity", "senescence", "autophagy", "mitophagy",
-            "peroxisome", "peroxisomal", "metabolic", "metabolism", "proteomic",
-            "inflammaging", "macrophage", "fibrosis", "vascular", "mri",
-        }
-        domain_hits = sorted((set(overlap) | reference_tokens) & domain_terms)
-        boost = min(0.08, 0.02 * len(domain_hits))
+    def _score_with_profile_boost(
+        self,
+        coverage: float,
+        overlap: list[str],
+        source_tokens: set[str],
+        reference_tokens: set[str],
+    ) -> float:
+        profile_hits = sorted(set(overlap) & source_tokens & reference_tokens)
+        boost = min(0.08, 0.02 * len(profile_hits))
         return min(1.0, coverage + boost)
 
 

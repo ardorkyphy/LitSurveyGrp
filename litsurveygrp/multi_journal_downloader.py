@@ -7,6 +7,9 @@ the module-one PdfDownloader implementation.
 """
 
 import re
+import hashlib
+import json
+import os
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +71,7 @@ class CrossrefJournalProvider:
         session=None,
         from_year: int | None = None,
         to_year: int | None = None,
+        monitor: RunMonitor | None = None,
     ):
         if not config.issn:
             raise ValueError("crossref journal config requires issn")
@@ -78,9 +82,11 @@ class CrossrefJournalProvider:
         self.limit = limit
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.monitor = monitor
 
     def discover(self) -> list[ArticleRecord]:
         """Return ArticleRecord items from the Crossref journal works endpoint."""
+        self.update_monitor("Crossref request", current_item=self.config.name)
         response = self.session.get(
             f"{self.API_BASE}/journals/{self.config.issn}/works",
             params=self.build_params(),
@@ -88,7 +94,15 @@ class CrossrefJournalProvider:
         )
         response.raise_for_status()
         items = response.json().get("message", {}).get("items", [])
-        return [self.parse_item(item) for item in items]
+        articles = [self.parse_item(item) for item in items]
+        self.update_monitor(
+            "Crossref response",
+            processed=len(articles),
+            total=len(items),
+            current_item=self.config.name,
+            metrics={"crossref_records": len(articles)},
+        )
+        return articles
 
     def build_params(self) -> dict:
         """Build Crossref request parameters."""
@@ -156,6 +170,24 @@ class CrossrefJournalProvider:
             return str(value[0]).strip() if value else ""
         return str(value or "").strip()
 
+    def update_monitor(
+        self,
+        message: str,
+        processed: int | None = None,
+        total: int | None = None,
+        current_item: str | None = None,
+        metrics: dict | None = None,
+    ) -> None:
+        if self.monitor:
+            self.monitor.update(
+                stage="discover:crossref",
+                message=message,
+                processed=processed,
+                total=total,
+                current_item=current_item,
+                metrics=metrics,
+            )
+
 
 class OpenAlexJournalProvider:
     """Discover journal articles from OpenAlex metadata."""
@@ -171,6 +203,9 @@ class OpenAlexJournalProvider:
         session=None,
         from_year: int | None = None,
         to_year: int | None = None,
+        monitor: RunMonitor | None = None,
+        metadata_cache_dir: Path | None = None,
+        use_metadata_cache: bool = True,
     ):
         if not config.issn:
             raise ValueError("openalex journal config requires issn")
@@ -181,13 +216,66 @@ class OpenAlexJournalProvider:
         self.limit = limit
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.monitor = monitor
+        self.metadata_cache = JsonResponseCache(metadata_cache_dir / "openalex") if metadata_cache_dir and use_metadata_cache else None
 
     def discover(self) -> list[ArticleRecord]:
         """Return ArticleRecord items from OpenAlex works."""
-        response = self.session.get(self.API_URL, params=self.build_params(), timeout=self.timeout)
+        articles: list[ArticleRecord] = []
+        cursor = "*"
+        page = 0
+        while cursor:
+            page += 1
+            params = self.build_params()
+            params["cursor"] = cursor
+            self.update_monitor(
+                "OpenAlex request",
+                processed=len(articles),
+                current_item=self.config.name,
+                metrics={"openalex_page": page, "openalex_cursor": cursor},
+            )
+            payload = self.request_payload(params)
+            items = payload.get("results", [])
+            if not items:
+                break
+            for item in items:
+                articles.append(self.parse_item(item))
+                if self.limit and len(articles) >= self.limit:
+                    self.update_monitor(
+                        "OpenAlex response limit reached",
+                        processed=len(articles),
+                        current_item=self.config.name,
+                        metrics={"openalex_records": len(articles), "openalex_page": page},
+                    )
+                    return articles
+            cursor = (payload.get("meta") or {}).get("next_cursor") or ""
+            if not cursor:
+                break
+        self.update_monitor(
+            "OpenAlex response",
+            processed=len(articles),
+            current_item=self.config.name,
+            metrics={"openalex_records": len(articles), "openalex_pages": page},
+        )
+        return articles
+
+    def request_payload(self, params: dict) -> dict:
+        """Read one OpenAlex page, using a local response cache when configured."""
+        if self.metadata_cache:
+            cached = self.metadata_cache.get(self.API_URL, params)
+            if cached is not None:
+                self.update_monitor(
+                    "OpenAlex cache hit",
+                    current_item=self.config.name,
+                    metrics={"metadata_cache": "hit"},
+                )
+                return cached
+        response = self.session.get(self.API_URL, params=params, timeout=self.timeout)
         response.raise_for_status()
-        items = response.json().get("results", [])
-        return [self.parse_item(item) for item in items]
+        payload = response.json()
+        if self.metadata_cache:
+            self.metadata_cache.set(self.API_URL, params, payload)
+        return payload
 
     def build_params(self) -> dict:
         filters = [
@@ -204,7 +292,7 @@ class OpenAlexJournalProvider:
         return {
             "filter": ",".join(filters),
             "sort": "publication_date:desc",
-            "per-page": min(self.limit or 50, 200),
+            "per-page": min(self.limit or 200, 200),
         }
 
     def parse_item(self, item: dict) -> ArticleRecord:
@@ -233,6 +321,7 @@ class OpenAlexJournalProvider:
             institutions=institutions,
             abstract=self._abstract_text(item.get("abstract_inverted_index") or {}),
             citation_count=item.get("cited_by_count"),
+            authoritative_topics=openalex_authoritative_topics(item),
             pdf_resolution_status="provider_pdf_url" if pdf_url else "provider_no_pdf_url",
         )
 
@@ -258,6 +347,24 @@ class OpenAlexJournalProvider:
                 words.append((position, word))
         return " ".join(word for _, word in sorted(words))
 
+    def update_monitor(
+        self,
+        message: str,
+        processed: int | None = None,
+        total: int | None = None,
+        current_item: str | None = None,
+        metrics: dict | None = None,
+    ) -> None:
+        if self.monitor:
+            self.monitor.update(
+                stage="discover:openalex",
+                message=message,
+                processed=processed,
+                total=total,
+                current_item=current_item,
+                metrics=metrics,
+            )
+
 
 class OpenAlexSearchProvider(OpenAlexJournalProvider):
     """Discover articles from OpenAlex full-work search instead of one journal."""
@@ -271,6 +378,9 @@ class OpenAlexSearchProvider(OpenAlexJournalProvider):
         session=None,
         from_year: int | None = None,
         to_year: int | None = None,
+        monitor: RunMonitor | None = None,
+        metadata_cache_dir: Path | None = None,
+        use_metadata_cache: bool = True,
     ):
         super().__init__(
             JournalConfig(name=f"OpenAlex search: {query}", provider="openalex-search", issn="search"),
@@ -280,6 +390,9 @@ class OpenAlexSearchProvider(OpenAlexJournalProvider):
             session=session,
             from_year=from_year,
             to_year=to_year,
+            monitor=monitor,
+            metadata_cache_dir=metadata_cache_dir,
+            use_metadata_cache=use_metadata_cache,
         )
         self.query = query
 
@@ -296,6 +409,69 @@ class OpenAlexSearchProvider(OpenAlexJournalProvider):
         return params
 
 
+def openalex_authoritative_topics(item: dict) -> list[dict]:
+    """Normalize OpenAlex topics/concepts into portable classification evidence."""
+    topics = []
+    seen = set()
+    for topic in item.get("topics") or []:
+        parts = [
+            ((topic.get("field") or {}).get("display_name") or "").strip(),
+            ((topic.get("subfield") or {}).get("display_name") or "").strip(),
+            (topic.get("display_name") or "").strip(),
+        ]
+        label = " > ".join(part for part in parts if part)
+        key = ("topic", label.casefold())
+        if label and key not in seen:
+            seen.add(key)
+            topics.append({
+                "source": "openalex",
+                "taxonomy": "OpenAlex Topics",
+                "label": label,
+                "field": parts[0],
+                "subfield": parts[1],
+                "topic": parts[2],
+            })
+    for concept in item.get("concepts") or []:
+        label = (concept.get("display_name") or "").strip()
+        if not label:
+            continue
+        key = ("concept", label.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append({
+            "source": "openalex",
+            "taxonomy": "OpenAlex Concepts",
+            "label": label,
+            "level": concept.get("level"),
+            "score": concept.get("score"),
+        })
+    return topics
+
+
+class JsonResponseCache:
+    """Small file cache for provider JSON pages."""
+
+    def __init__(self, cache_dir: Path):
+        self.cache_dir = Path(cache_dir)
+
+    def get(self, url: str, params: dict) -> dict | None:
+        path = self.path_for(url, params)
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def set(self, url: str, params: dict, payload: dict) -> None:
+        path = self.path_for(url, params)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def path_for(self, url: str, params: dict) -> Path:
+        key_data = json.dumps({"url": url, "params": params}, ensure_ascii=False, sort_keys=True)
+        key = hashlib.sha256(key_data.encode("utf-8")).hexdigest()
+        return self.cache_dir / f"{key}.json"
+
+
 class NatureCrawlerJournalProvider:
     """Discover journal articles from Nature-family listing pages."""
 
@@ -307,6 +483,7 @@ class NatureCrawlerJournalProvider:
         timeout: int = 15,
         from_year: int | None = None,
         to_year: int | None = None,
+        monitor: RunMonitor | None = None,
     ):
         if not config.slug:
             raise ValueError("nature crawler journal config requires slug")
@@ -316,8 +493,10 @@ class NatureCrawlerJournalProvider:
         self.timeout = timeout
         self.from_year = from_year
         self.to_year = to_year
+        self.monitor = monitor
 
     def discover(self) -> list[ArticleRecord]:
+        self.update_monitor("Nature crawler starting", current_item=self.config.name)
         crawler = NatureJournalCrawler(
             journal_name=self.config.name,
             journal_slug=self.config.slug,
@@ -330,8 +509,42 @@ class NatureCrawlerJournalProvider:
         for article_url in crawler.iter_article_urls():
             if self.limit and len(articles) >= self.limit:
                 break
+            self.update_monitor(
+                "Fetching Nature article detail",
+                processed=len(articles),
+                current_item=article_url,
+                metrics={"nature_article_urls_seen": len(articles) + 1},
+            )
             articles.append(crawler.parse_article_detail(crawler.fetch_article_detail(article_url), article_url))
+            self.update_monitor(
+                "Parsed Nature article detail",
+                processed=len(articles),
+                current_item=articles[-1].title or article_url,
+                metrics={"nature_records": len(articles)},
+            )
+        self.update_monitor(
+            "Nature crawler finished",
+            processed=len(articles),
+            current_item=self.config.name,
+            metrics={"nature_records": len(articles)},
+        )
         return articles
+
+    def update_monitor(
+        self,
+        message: str,
+        processed: int | None = None,
+        current_item: str | None = None,
+        metrics: dict | None = None,
+    ) -> None:
+        if self.monitor:
+            self.monitor.update(
+                stage="discover:nature",
+                message=message,
+                processed=processed,
+                current_item=current_item,
+                metrics=metrics,
+            )
 
 
 class LayeredJournalProvider:
@@ -346,6 +559,7 @@ class LayeredJournalProvider:
         from_year: int | None = None,
         to_year: int | None = None,
         provider_factories: list | None = None,
+        monitor: RunMonitor | None = None,
     ):
         self.config = config
         self.year = year
@@ -355,25 +569,62 @@ class LayeredJournalProvider:
         self.to_year = to_year
         self.provider_factories = provider_factories
         self.errors: list[str] = []
+        self.monitor = monitor
 
     def discover(self) -> list[ArticleRecord]:
         """Return de-duplicated articles from all available provider layers."""
         articles = []
         seen = set()
         for provider in self.build_providers():
+            self.update_monitor(
+                f"Starting provider {provider.__class__.__name__}",
+                processed=len(articles),
+                current_item=self.config.name,
+                metrics={"active_provider": provider.__class__.__name__},
+            )
             try:
                 discovered = provider.discover()
             except Exception as exc:
                 self.errors.append(f"{provider.__class__.__name__}:{exc.__class__.__name__}")
+                self.update_monitor(
+                    f"Provider failed: {self.errors[-1]}",
+                    processed=len(articles),
+                    current_item=self.config.name,
+                    metrics={"last_provider_error": self.errors[-1]},
+                )
                 continue
+            added = 0
             for article in discovered:
                 key = self.article_key(article)
                 if key in seen:
                     continue
                 seen.add(key)
                 articles.append(article)
+                added += 1
+                self.update_monitor(
+                    f"Added records from {provider.__class__.__name__}",
+                    processed=len(articles),
+                    total=len(discovered),
+                    current_item=article.title or article.doi or article.article_url,
+                    metrics={
+                        "active_provider": provider.__class__.__name__,
+                        "provider_records": len(discovered),
+                        "provider_new_records": added,
+                    },
+                )
                 if self.limit and len(articles) >= self.limit:
                     return articles
+            self.update_monitor(
+                f"Finished provider {provider.__class__.__name__}",
+                processed=len(articles),
+                total=len(discovered),
+                current_item=self.config.name,
+                metrics={
+                    "active_provider": provider.__class__.__name__,
+                    "provider_records": len(discovered),
+                    "provider_new_records": added,
+                },
+            )
         return articles
 
     def build_providers(self) -> list:
@@ -388,6 +639,7 @@ class LayeredJournalProvider:
                 timeout=self.timeout,
                 from_year=self.from_year,
                 to_year=self.to_year,
+                monitor=self.monitor,
             ))
             providers.append(CrossrefJournalProvider(
                 self.config,
@@ -396,6 +648,7 @@ class LayeredJournalProvider:
                 timeout=self.timeout,
                 from_year=self.from_year,
                 to_year=self.to_year,
+                monitor=self.monitor,
             ))
         if self.config.slug:
             providers.append(NatureCrawlerJournalProvider(
@@ -405,8 +658,27 @@ class LayeredJournalProvider:
                 timeout=self.timeout,
                 from_year=self.from_year,
                 to_year=self.to_year,
+                monitor=self.monitor,
             ))
         return providers
+
+    def update_monitor(
+        self,
+        message: str,
+        processed: int | None = None,
+        total: int | None = None,
+        current_item: str | None = None,
+        metrics: dict | None = None,
+    ) -> None:
+        if self.monitor:
+            self.monitor.update(
+                stage="discover:layered",
+                message=message,
+                processed=processed,
+                total=total,
+                current_item=current_item,
+                metrics=metrics,
+            )
 
     def article_key(self, article: ArticleRecord) -> str:
         if article.doi:
@@ -428,6 +700,7 @@ def build_default_provider_registry() -> JournalProviderRegistry:
             timeout=context.timeout,
             from_year=context.from_year,
             to_year=context.to_year,
+            monitor=context.monitor,
         ),
     )
     registry.register(
@@ -439,6 +712,9 @@ def build_default_provider_registry() -> JournalProviderRegistry:
             timeout=context.timeout,
             from_year=context.from_year,
             to_year=context.to_year,
+            monitor=context.monitor,
+            metadata_cache_dir=context.metadata_cache_dir,
+            use_metadata_cache=context.use_metadata_cache,
         ),
     )
     registry.register(
@@ -450,6 +726,9 @@ def build_default_provider_registry() -> JournalProviderRegistry:
             timeout=context.timeout,
             from_year=context.from_year,
             to_year=context.to_year,
+            monitor=context.monitor,
+            metadata_cache_dir=context.metadata_cache_dir,
+            use_metadata_cache=context.use_metadata_cache,
         ),
     )
     registry.register(
@@ -461,6 +740,7 @@ def build_default_provider_registry() -> JournalProviderRegistry:
             timeout=context.timeout,
             from_year=context.from_year,
             to_year=context.to_year,
+            monitor=context.monitor,
         ),
     )
     registry.register(
@@ -472,6 +752,7 @@ def build_default_provider_registry() -> JournalProviderRegistry:
             timeout=context.timeout,
             from_year=context.from_year,
             to_year=context.to_year,
+            monitor=context.monitor,
         ),
     )
     return registry
@@ -500,8 +781,10 @@ class MultiJournalDownloadService:
         provider_registry: JournalProviderRegistry | None = None,
         download_workers: int = 1,
         progress_write_interval: int = 10,
-        download_pdfs: bool = True,
+        download_pdfs: bool = False,
         monitor: RunMonitor | None = None,
+        metadata_cache_dir: Path | None = None,
+        use_metadata_cache: bool = True,
     ):
         self.output_dir = Path(output_dir)
         self.results_dir = Path(results_dir) if results_dir else self.output_dir
@@ -525,6 +808,13 @@ class MultiJournalDownloadService:
         self.progress_write_interval = max(1, int(progress_write_interval or 1))
         self.download_pdfs = bool(download_pdfs)
         self.monitor = monitor or RunMonitor(self.results_dir)
+        self.use_metadata_cache = bool(use_metadata_cache)
+        env_cache_dir = os.environ.get("LITSURVEYGRP_METADATA_CACHE_DIR", "").strip()
+        self.metadata_cache_dir = (
+            Path(metadata_cache_dir)
+            if metadata_cache_dir
+            else (Path(env_cache_dir) if env_cache_dir else self.results_dir / "metadata_cache")
+        )
 
     def run(self) -> list[ArticleRecord]:
         """Discover and download articles across all configured journals."""
@@ -734,10 +1024,23 @@ class MultiJournalDownloadService:
                 year=self.year,
                 from_year=self.from_year,
                 to_year=self.to_year,
-                limit=self.per_journal_limit,
+                limit=self.effective_provider_limit(journal),
                 timeout=self.download_timeout,
+                monitor=self.monitor,
+                metadata_cache_dir=self.metadata_cache_dir,
+                use_metadata_cache=self.use_metadata_cache,
             ),
         )
+
+    def effective_provider_limit(self, journal: JournalConfig) -> int | None:
+        """Limit provider discovery before materializing large API result sets."""
+        if self.per_journal_limit:
+            return self.per_journal_limit
+        if not self.download_pdfs:
+            return self.limit
+        if journal.provider == "openalex-search":
+            return self.limit
+        return None
 
     def write_manifest(self, articles: list[ArticleRecord]) -> Path:
         """Write a JSON manifest."""
@@ -838,7 +1141,9 @@ def run_from_args(args) -> int:
         article_filter=build_article_filter_from_args(args),
         prefilter_enricher=build_prefilter_enricher_from_args(args),
         download_workers=getattr(args, "download_workers", 1),
-        download_pdfs=getattr(args, "download_pdfs", True),
+        download_pdfs=getattr(args, "download_pdfs", False),
+        metadata_cache_dir=Path(args.metadata_cache_dir) if getattr(args, "metadata_cache_dir", None) else None,
+        use_metadata_cache=not getattr(args, "no_metadata_cache", False),
     )
     service.run()
     return 0
@@ -863,7 +1168,9 @@ def run_nature_aging_from_args(args) -> int:
         manifest_name="article_manifest.json",
         report_name="download_report.csv",
         download_workers=getattr(args, "download_workers", 1),
-        download_pdfs=getattr(args, "download_pdfs", True),
+        download_pdfs=getattr(args, "download_pdfs", False),
+        metadata_cache_dir=Path(args.metadata_cache_dir) if getattr(args, "metadata_cache_dir", None) else None,
+        use_metadata_cache=not getattr(args, "no_metadata_cache", False),
     )
     service.run()
     return 0

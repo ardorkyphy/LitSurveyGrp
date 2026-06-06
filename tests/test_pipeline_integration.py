@@ -27,6 +27,7 @@ def test_download_classify_extract_and_export_reference_pipeline(monkeypatch, tm
         journals=[JournalConfig("International Journal of Computer Vision", provider="openalex", issn="0920-5691")],
         limit=1,
         per_journal_limit=1,
+        download_pdfs=True,
     )
     service.iter_articles = lambda: iter([
         ArticleRecord(

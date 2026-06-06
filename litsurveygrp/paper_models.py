@@ -127,7 +127,7 @@ class ArticleRecord:
 
     title: str
     doi: str = ""
-    journal: str = "Nature Aging"
+    journal: str = ""
     article_url: str = ""
     pdf_url: str = ""
     local_pdf_path: Optional[Path] = None
@@ -139,6 +139,11 @@ class ArticleRecord:
     subdomain: str = "Other"
     classification_confidence: float = 0.0
     classification_reason: str = ""
+    classification_source: str = ""
+    classification_source_label: str = ""
+    classification_taxonomy: str = ""
+    classification_evidence: list[dict] = field(default_factory=list)
+    authoritative_topics: list[dict] = field(default_factory=list)
     problem_statement: str = ""
     solution_summary: Optional[str] = None
     citation_count: Optional[int] = None
@@ -171,6 +176,11 @@ class ArticleRecord:
             "subdomain": self.subdomain,
             "classification_confidence": self.classification_confidence,
             "classification_reason": self.classification_reason,
+            "classification_source": self.classification_source,
+            "classification_source_label": self.classification_source_label,
+            "classification_taxonomy": self.classification_taxonomy,
+            "classification_evidence": list(self.classification_evidence),
+            "authoritative_topics": list(self.authoritative_topics),
             "problem_statement": self.problem_statement,
             "solution_summary": self.solution_summary,
             "citation_count": self.citation_count,
@@ -195,7 +205,7 @@ class ArticleRecord:
         return cls(
             title=data.get("title", ""),
             doi=data.get("doi", ""),
-            journal=data.get("journal", "Nature Aging"),
+            journal=data.get("journal", ""),
             article_url=data.get("article_url", ""),
             pdf_url=data.get("pdf_url", ""),
             local_pdf_path=Path(local_pdf_path) if local_pdf_path else None,
@@ -207,6 +217,11 @@ class ArticleRecord:
             subdomain=data.get("subdomain", "Other"),
             classification_confidence=float(data.get("classification_confidence") or 0.0),
             classification_reason=data.get("classification_reason", ""),
+            classification_source=data.get("classification_source", ""),
+            classification_source_label=data.get("classification_source_label", ""),
+            classification_taxonomy=data.get("classification_taxonomy", ""),
+            classification_evidence=list(data.get("classification_evidence") or []),
+            authoritative_topics=list(data.get("authoritative_topics") or []),
             problem_statement=data.get("problem_statement", ""),
             solution_summary=data.get("solution_summary"),
             citation_count=data.get("citation_count"),

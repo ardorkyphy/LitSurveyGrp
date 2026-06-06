@@ -2,18 +2,24 @@
 """End-to-end literature survey pipeline orchestration."""
 
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agents.domain_synthesizer_agent import DomainSynthesizerAgent
+from agents.paper_reader_agent import PaperReaderAgent
+from litsurveygrp.agent_input import AgentInputPreparer
 from litsurveygrp.enrichment.metadata_enrichment import (
     DEFAULT_REQUEST_INTERVAL_SECONDS,
     DEFAULT_SOURCES,
     MetadataEnrichmentService,
 )
+from litsurveygrp.final_report import FinalSurveyReportBuilder
 from litsurveygrp.filters import ArticleFilter
 from litsurveygrp.multi_journal_downloader import JournalConfig, MultiJournalDownloadService, parse_journal_specs
 from litsurveygrp.paper_classifier import PaperClassificationService
+from litsurveygrp.pdf_download_stage import TopPdfDownloadService
 from litsurveygrp.reference_analysis import ReferenceAnalysisService
 from litsurveygrp.research_stats import ResearchStatsWriter
 from litsurveygrp.run_monitor import RunMonitor
@@ -35,8 +41,10 @@ class SurveyPipelineConfig:
     per_journal_limit: int | None = None
     download_timeout: int = 15
     download_workers: int = 1
-    download_pdfs: bool = True
+    download_pdfs: bool = False
     pdf_only_candidates: bool = False
+    metadata_cache_dir: Path | None = None
+    use_metadata_cache: bool = True
     dry_run: bool = False
     keywords: list[str] = field(default_factory=list)
     article_types: list[str] = field(default_factory=list)
@@ -48,10 +56,13 @@ class SurveyPipelineConfig:
     metadata_sources: list[str] | None = None
     metadata_timeout: int = 15
     request_interval: float = DEFAULT_REQUEST_INTERVAL_SECONDS
+    enrichment_workers: int = 1
     classify_papers: bool = True
     copy_files: bool = True
     clean_classified: bool = True
     sentence_model: str = "allenai-specter"
+    domain_rules: str = ""
+    classification_workers: int = 1
     write_stats: bool = True
     write_visualization: bool = True
     analyze_references: bool = False
@@ -72,6 +83,8 @@ class SurveyPipelineConfig:
         self.results_dir = Path(self.results_dir)
         if self.reference_out_dir is not None:
             self.reference_out_dir = Path(self.reference_out_dir)
+        if self.metadata_cache_dir is not None:
+            self.metadata_cache_dir = Path(self.metadata_cache_dir)
         self.keywords = list(self.keywords or [])
         self.article_types = list(self.article_types or [])
         self.authors = list(self.authors or [])
@@ -128,6 +141,92 @@ class SurveyPipelineOutputs:
         }
 
 
+@dataclass
+class SurveyCommandConfig:
+    """User-facing end-to-end survey configuration."""
+
+    out_dir: Path
+    journal_specs: list[str] | None = None
+    query: str = ""
+    from_year: int | None = None
+    to_year: int | None = None
+    limit: int | None = None
+    per_journal_limit: int | None = None
+    keywords: list[str] = field(default_factory=list)
+    article_types: list[str] = field(default_factory=list)
+    min_citations: int | None = None
+    metadata_sources: list[str] | None = None
+    request_interval: float = DEFAULT_REQUEST_INTERVAL_SECONDS
+    enrichment_workers: int = 1
+    top_papers: int = 30
+    top_domains: int = 10
+    per_domain: int = 30
+    download_workers: int = 4
+    download_timeout: int = 15
+    min_value_score: float | None = None
+    require_doi: bool = False
+    agent_provider: str = "dry-run"
+    agent_model: str = "gpt-4.1-mini"
+    agent_cache_dir: Path | None = None
+    run_agents: bool = True
+    extract_pdf_text: bool = True
+    max_text_chars: int = 60000
+    report_title: str = ""
+    domain_rules: str = ""
+    classification_workers: int = 1
+    analyze_references: bool = False
+    max_references_per_paper: int | None = 50
+    max_total_references: int | None = 1000
+    reference_relevance_threshold: float = 0.30
+    max_reference_downloads: int = 0
+    min_reference_value_score: float = 0.45
+    require_reference_doi: bool = False
+    reference_query: str = ""
+    reference_sources: list[str] | None = None
+    clean_existing: bool = False
+
+    def __post_init__(self) -> None:
+        self.out_dir = Path(self.out_dir)
+        self.journal_specs = list(self.journal_specs or [])
+        self.keywords = list(self.keywords or [])
+        self.article_types = list(self.article_types or [])
+        self.reference_sources = list(self.reference_sources or [])
+        if self.agent_cache_dir is not None:
+            self.agent_cache_dir = Path(self.agent_cache_dir)
+
+    @property
+    def papers_dir(self) -> Path:
+        return self.out_dir / "papers"
+
+    @property
+    def results_dir(self) -> Path:
+        return self.out_dir / "results"
+
+    @property
+    def agent_dir(self) -> Path:
+        return self.out_dir / "agent_inputs"
+
+
+@dataclass
+class SurveyCommandOutputs:
+    """Important outputs from the user-facing survey command."""
+
+    out_dir: Path
+    papers_dir: Path
+    results_dir: Path
+    agent_dir: Path
+    article_manifest: Path
+    classified_manifest: Path
+    pdf_manifest: Path | None = None
+    references_dir: Path | None = None
+    markdown_report: Path | None = None
+    html_report: Path | None = None
+
+    @property
+    def final_manifest(self) -> Path:
+        return self.pdf_manifest or self.classified_manifest or self.article_manifest
+
+
 class SurveyPipelineService:
     """Run download, enrichment, classification, stats, and visualization in order."""
 
@@ -144,8 +243,10 @@ class SurveyPipelineService:
         per_journal_limit: int | None = None,
         download_timeout: int = 15,
         download_workers: int = 1,
-        download_pdfs: bool = True,
+        download_pdfs: bool = False,
         pdf_only_candidates: bool = False,
+        metadata_cache_dir: Path | None = None,
+        use_metadata_cache: bool = True,
         dry_run: bool = False,
         keywords: list[str] | None = None,
         article_types: list[str] | None = None,
@@ -157,10 +258,13 @@ class SurveyPipelineService:
         metadata_sources: list[str] | None = None,
         metadata_timeout: int = 15,
         request_interval: float = DEFAULT_REQUEST_INTERVAL_SECONDS,
+        enrichment_workers: int = 1,
         classify_papers: bool = True,
         copy_files: bool = True,
         clean_classified: bool = True,
         sentence_model: str = "allenai-specter",
+        domain_rules: str = "",
+        classification_workers: int = 1,
         write_stats: bool = True,
         write_visualization: bool = True,
         analyze_references: bool = False,
@@ -195,6 +299,8 @@ class SurveyPipelineService:
                 download_workers=download_workers,
                 download_pdfs=download_pdfs,
                 pdf_only_candidates=pdf_only_candidates,
+                metadata_cache_dir=metadata_cache_dir,
+                use_metadata_cache=use_metadata_cache,
                 dry_run=dry_run,
                 keywords=list(keywords or []),
                 article_types=list(article_types or []),
@@ -206,10 +312,13 @@ class SurveyPipelineService:
                 metadata_sources=metadata_sources,
                 metadata_timeout=metadata_timeout,
                 request_interval=request_interval,
+                enrichment_workers=enrichment_workers,
                 classify_papers=classify_papers,
                 copy_files=copy_files,
                 clean_classified=clean_classified,
                 sentence_model=sentence_model,
+                domain_rules=domain_rules,
+                classification_workers=classification_workers,
                 write_stats=write_stats,
                 write_visualization=write_visualization,
                 analyze_references=analyze_references,
@@ -244,16 +353,21 @@ class SurveyPipelineService:
         self.download_workers = self.config.download_workers
         self.download_pdfs = self.config.download_pdfs
         self.pdf_only_candidates = self.config.pdf_only_candidates
+        self.metadata_cache_dir = self.config.metadata_cache_dir
+        self.use_metadata_cache = self.config.use_metadata_cache
         self.dry_run = self.config.dry_run
         self.filter_sources = self.config.filter_sources
         self.enrich_metadata = self.config.enrich_metadata
         self.metadata_sources = self.config.metadata_sources
         self.metadata_timeout = self.config.metadata_timeout
         self.request_interval = self.config.request_interval
+        self.enrichment_workers = self.config.enrichment_workers
         self.classify_papers = self.config.classify_papers
         self.copy_files = self.config.copy_files
         self.clean_classified = self.config.clean_classified
         self.sentence_model = self.config.sentence_model
+        self.domain_rules = self.config.domain_rules
+        self.classification_workers = self.config.classification_workers
         self.write_stats = self.config.write_stats
         self.write_visualization = self.config.write_visualization
         self.analyze_references = self.config.analyze_references
@@ -283,7 +397,10 @@ class SurveyPipelineService:
                 "journals": ", ".join(self.journal_specs or []),
                 "query": self.query,
                 "download_pdfs": self.download_pdfs,
+                "metadata_cache_dir": str(self.effective_metadata_cache_dir()),
                 "metadata_sources": ", ".join(self.metadata_sources or list(DEFAULT_SOURCES)),
+                "enrichment_workers": self.enrichment_workers,
+                "classification_workers": self.classification_workers,
             },
         )
 
@@ -349,6 +466,8 @@ class SurveyPipelineService:
             download_workers=self.download_workers,
             download_pdfs=self.download_pdfs,
             pdf_only_candidates=self.pdf_only_candidates,
+            metadata_cache_dir=self.effective_metadata_cache_dir(),
+            use_metadata_cache=self.use_metadata_cache,
             article_filter=self.article_filter if self.article_filter.has_criteria() else None,
             prefilter_enricher=self.build_prefilter_enricher(),
             monitor=self.monitor,
@@ -371,6 +490,7 @@ class SurveyPipelineService:
             sources=self.filter_sources or ["openalex", "crossref"],
             timeout=self.metadata_timeout,
             request_interval=self.request_interval,
+            workers=self.enrichment_workers,
         )
 
     def _enrich(self, manifest: Path, outputs: SurveyPipelineOutputs) -> Path:
@@ -382,6 +502,7 @@ class SurveyPipelineService:
             output_path=outputs.enriched_manifest,
             timeout=self.metadata_timeout,
             request_interval=self.request_interval,
+            workers=self.enrichment_workers,
             monitor=self.monitor,
         ).run()
         return outputs.enriched_manifest
@@ -396,6 +517,8 @@ class SurveyPipelineService:
             output_dir=self.results_dir,
             organize_dir=self.papers_dir,
             sentence_model=self.sentence_model,
+            domain_rules=self.domain_rules,
+            classification_workers=self.classification_workers,
         ).run()
         return outputs.classified_manifest
 
@@ -412,6 +535,10 @@ class SurveyPipelineService:
         report["download_workers"] = self.download_workers
         report["download_pdfs"] = self.download_pdfs
         report["collection_mode"] = "download_pdfs" if self.download_pdfs else "metadata_only"
+        report["metadata_cache"] = {
+            "enabled": self.use_metadata_cache,
+            "dir": str(self.effective_metadata_cache_dir()),
+        }
         report["filters"] = {
             "keywords": list(self.article_filter.keywords),
             "article_types": list(self.article_filter.article_types),
@@ -421,7 +548,10 @@ class SurveyPipelineService:
             "filter_sources": list(self.filter_sources or ["openalex", "crossref"]),
         }
         report["metadata_sources"] = self.metadata_sources or list(DEFAULT_SOURCES)
+        report["domain_rules"] = self.domain_rules
         report["request_interval"] = self.request_interval
+        report["enrichment_workers"] = self.enrichment_workers
+        report["classification_workers"] = self.classification_workers
         report["steps"] = {
             "download": True,
             "enrichment": self.enrich_metadata,
@@ -443,6 +573,10 @@ class SurveyPipelineService:
             json.dump(report, handle, ensure_ascii=False, indent=2)
         return path
 
+    def effective_metadata_cache_dir(self) -> Path:
+        env_dir = os.environ.get("LITSURVEYGRP_METADATA_CACHE_DIR", "").strip()
+        return self.metadata_cache_dir or (Path(env_dir) if env_dir else self.results_dir / "metadata_cache")
+
     def _clean_generated_dir(self, path: Path) -> None:
         path = Path(path)
         if not path.exists():
@@ -452,6 +586,164 @@ class SurveyPipelineService:
         if resolved in {Path(resolved.anchor), cwd, cwd.parent}:
             raise ValueError(f"refusing to clean unsafe generated directory: {path}")
         shutil.rmtree(resolved)
+
+
+class SurveyCommandService:
+    """Run the core product workflow: metadata, stats, top PDFs, agents, report."""
+
+    def __init__(self, config: SurveyCommandConfig):
+        self.config = config
+
+    def run(self) -> SurveyCommandOutputs:
+        config = self.config
+        pipeline_outputs = SurveyPipelineService(
+            papers_dir=config.papers_dir,
+            results_dir=config.results_dir,
+            journal_specs=config.journal_specs or None,
+            query=config.query,
+            from_year=config.from_year,
+            to_year=config.to_year,
+            limit=config.limit,
+            per_journal_limit=config.per_journal_limit,
+            download_timeout=config.download_timeout,
+            download_workers=config.download_workers,
+            download_pdfs=False,
+            keywords=config.keywords,
+            article_types=config.article_types,
+            min_citations=config.min_citations,
+            metadata_sources=config.metadata_sources,
+            request_interval=config.request_interval,
+            enrichment_workers=config.enrichment_workers,
+            analyze_references=False,
+            top_n=config.top_papers,
+            clean_existing=config.clean_existing,
+            domain_rules=config.domain_rules,
+            classification_workers=config.classification_workers,
+        ).run()
+
+        pdf_outputs = TopPdfDownloadService(
+            manifest_path=pipeline_outputs.final_manifest,
+            papers_dir=config.papers_dir,
+            results_dir=config.results_dir,
+            top=config.top_papers,
+            min_value_score=config.min_value_score,
+            download_workers=config.download_workers,
+            timeout=config.download_timeout,
+            require_doi=config.require_doi,
+        ).run()
+        pdf_manifest = pdf_outputs["manifest"]
+
+        references_dir = None
+        if config.analyze_references:
+            references_dir = config.results_dir / "references"
+            ReferenceAnalysisService(
+                pdf_manifest,
+                out_dir=references_dir,
+                max_references_per_paper=config.max_references_per_paper,
+                max_total_references=config.max_total_references,
+                relevance_threshold=config.reference_relevance_threshold,
+                max_reference_downloads=config.max_reference_downloads,
+                min_value_score=config.min_reference_value_score,
+                require_doi_for_download=config.require_reference_doi,
+                reference_query=config.reference_query,
+                metadata_sources=config.reference_sources or None,
+                metadata_timeout=config.download_timeout,
+                request_interval=config.request_interval,
+            ).run()
+
+        AgentInputPreparer(
+            manifest_path=pdf_manifest,
+            out_dir=config.agent_dir,
+            top_domains=config.top_domains,
+            per_domain=config.per_domain,
+            copy_pdfs=True,
+            extract_pdf_text=config.extract_pdf_text,
+            max_text_chars=config.max_text_chars,
+            project_name=config.query or ", ".join(config.journal_specs),
+            monitor=RunMonitor(config.agent_dir),
+        ).run()
+
+        if config.run_agents:
+            PaperReaderAgent(
+                input_dir=config.agent_dir,
+                provider=config.agent_provider,
+                model=config.agent_model,
+                cache_dir=config.agent_cache_dir,
+                monitor=RunMonitor(config.agent_dir),
+            ).run()
+            DomainSynthesizerAgent(
+                input_dir=config.agent_dir,
+                provider=config.agent_provider,
+                model=config.agent_model,
+                cache_dir=config.agent_cache_dir,
+                monitor=RunMonitor(config.agent_dir),
+            ).run()
+
+        report_outputs = FinalSurveyReportBuilder(
+            results_dir=config.results_dir,
+            agent_dir=config.agent_dir,
+            title=config.report_title,
+        ).build()
+
+        return SurveyCommandOutputs(
+            out_dir=config.out_dir,
+            papers_dir=config.papers_dir,
+            results_dir=config.results_dir,
+            agent_dir=config.agent_dir,
+            article_manifest=pipeline_outputs.download_manifest,
+            classified_manifest=pipeline_outputs.final_manifest,
+            pdf_manifest=pdf_manifest,
+            references_dir=references_dir,
+            markdown_report=report_outputs["markdown"],
+            html_report=report_outputs["html"],
+        )
+
+
+def run_survey_from_args(args) -> int:
+    """CLI adapter for the simplified lsg survey command."""
+    config = SurveyCommandConfig(
+        out_dir=Path(args.out),
+        journal_specs=getattr(args, "journal", None),
+        query=getattr(args, "query", ""),
+        from_year=getattr(args, "from_year", None),
+        to_year=getattr(args, "to_year", None),
+        limit=getattr(args, "limit", None),
+        per_journal_limit=getattr(args, "per_journal_limit", None),
+        keywords=getattr(args, "keyword", None) or [],
+        article_types=getattr(args, "article_type", None) or [],
+        min_citations=getattr(args, "min_citations", None),
+        metadata_sources=getattr(args, "sources", None),
+        request_interval=getattr(args, "request_interval", DEFAULT_REQUEST_INTERVAL_SECONDS),
+        enrichment_workers=getattr(args, "enrichment_workers", 1),
+        top_papers=getattr(args, "top_papers", 30),
+        top_domains=getattr(args, "top_domains", 10),
+        per_domain=getattr(args, "per_domain", 30),
+        download_workers=getattr(args, "download_workers", 4),
+        download_timeout=getattr(args, "download_timeout", 15),
+        min_value_score=getattr(args, "min_value_score", None),
+        require_doi=getattr(args, "require_doi", False),
+        agent_provider=getattr(args, "agent_provider", "dry-run"),
+        agent_model=getattr(args, "agent_model", "gpt-4.1-mini"),
+        agent_cache_dir=Path(args.agent_cache_dir) if getattr(args, "agent_cache_dir", None) else None,
+        run_agents=not getattr(args, "skip_agents", False),
+        extract_pdf_text=not getattr(args, "no_extract_pdf_text", False),
+        max_text_chars=getattr(args, "max_text_chars", 60000),
+        report_title=getattr(args, "title", ""),
+        domain_rules=getattr(args, "domain_rules", ""),
+        classification_workers=getattr(args, "classification_workers", 1),
+        analyze_references=getattr(args, "analyze_references", False),
+        max_references_per_paper=getattr(args, "max_references_per_paper", 50),
+        max_total_references=getattr(args, "max_total_references", 1000),
+        reference_relevance_threshold=getattr(args, "reference_relevance_threshold", 0.30),
+        max_reference_downloads=getattr(args, "max_reference_downloads", 0),
+        min_reference_value_score=getattr(args, "min_reference_value_score", 0.45),
+        require_reference_doi=getattr(args, "require_reference_doi", False),
+        reference_query=getattr(args, "reference_query", ""),
+        reference_sources=getattr(args, "reference_sources", None),
+        clean_existing=getattr(args, "clean_existing", False),
+    )
+    SurveyCommandService(config).run()
+    return 0
 
 
 def run_from_args(args) -> int:
@@ -468,8 +760,10 @@ def run_from_args(args) -> int:
         per_journal_limit=getattr(args, "per_journal_limit", None),
         download_timeout=getattr(args, "download_timeout", 15),
         download_workers=getattr(args, "download_workers", 1),
-        download_pdfs=getattr(args, "download_pdfs", True),
+        download_pdfs=getattr(args, "download_pdfs", False),
         pdf_only_candidates=getattr(args, "pdf_only_candidates", False),
+        metadata_cache_dir=Path(args.metadata_cache_dir) if getattr(args, "metadata_cache_dir", None) else None,
+        use_metadata_cache=not getattr(args, "no_metadata_cache", False),
         dry_run=getattr(args, "dry_run", False),
         keywords=getattr(args, "keyword", None),
         article_types=getattr(args, "article_type", None),
@@ -481,9 +775,12 @@ def run_from_args(args) -> int:
         metadata_sources=getattr(args, "sources", None),
         metadata_timeout=getattr(args, "metadata_timeout", 15),
         request_interval=getattr(args, "request_interval", DEFAULT_REQUEST_INTERVAL_SECONDS),
+        enrichment_workers=getattr(args, "enrichment_workers", 1),
         classify_papers=not getattr(args, "skip_classification", False),
         copy_files=not getattr(args, "move", False),
         sentence_model=getattr(args, "sentence_model", "allenai-specter"),
+        domain_rules=getattr(args, "domain_rules", ""),
+        classification_workers=getattr(args, "classification_workers", 1),
         write_stats=not getattr(args, "skip_stats", False),
         write_visualization=not getattr(args, "skip_visualization", False),
         analyze_references=getattr(args, "analyze_references", False),

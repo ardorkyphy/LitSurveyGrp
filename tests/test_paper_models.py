@@ -9,7 +9,7 @@ def test_article_record_defaults_are_mvp_contract():
     article = ArticleRecord(title="Aging intervention study")
 
     assert article.title == "Aging intervention study"
-    assert article.journal == "Nature Aging"
+    assert article.journal == ""
     assert article.subdomain == "Other"
     assert article.classification_confidence == 0.0
     assert article.classification_reason == ""
@@ -25,6 +25,7 @@ def test_article_record_defaults_are_mvp_contract():
     assert article.abstract_source == ""
     assert article.metadata_sources == []
     assert article.enrichment_status == ""
+    assert article.authoritative_topics == []
 
 
 def test_article_record_list_defaults_are_not_shared():
@@ -63,6 +64,28 @@ def test_article_record_manifest_round_trip_with_path():
         enrichment_status="enriched",
         classification_confidence=0.81,
         classification_reason="profile=Mechanism_Research",
+        classification_source="pubmed_mesh",
+        classification_source_label="Alzheimer Disease",
+        classification_taxonomy="MeSH",
+        classification_evidence=[
+            {
+                "source": "pubmed_mesh",
+                "taxonomy": "MeSH",
+                "label": "Alzheimer Disease",
+                "domain": "Alzheimer Disease",
+                "confidence": 0.95,
+            }
+        ],
+        authoritative_topics=[
+            {
+                "source": "openalex",
+                "taxonomy": "OpenAlex Topics",
+                "label": "Computer Science > Artificial Intelligence > Causal Learning",
+                "field": "Computer Science",
+                "subfield": "Artificial Intelligence",
+                "topic": "Causal Learning",
+            }
+        ],
         references=[
             ReferenceRecord(
                 title="Cited aging mechanism paper",
@@ -94,6 +117,11 @@ def test_article_record_manifest_round_trip_with_path():
     assert restored.enrichment_status == "enriched"
     assert restored.classification_confidence == 0.81
     assert restored.classification_reason == "profile=Mechanism_Research"
+    assert restored.classification_source == "pubmed_mesh"
+    assert restored.classification_source_label == "Alzheimer Disease"
+    assert restored.classification_taxonomy == "MeSH"
+    assert restored.classification_evidence[0]["label"] == "Alzheimer Disease"
+    assert restored.authoritative_topics[0]["topic"] == "Causal Learning"
     assert len(restored.references) == 1
     assert restored.references[0].title == "Cited aging mechanism paper"
     assert restored.references[0].doi == "10.1/ref"

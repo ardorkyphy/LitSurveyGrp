@@ -2,9 +2,9 @@
 
 LitSurveyGrp is a local literature-survey automation tool. It is designed for
 research exploration rather than simple paper downloading: it discovers papers,
-enriches metadata, resolves open-access PDFs, extracts references, clusters
-papers into research topics, writes research-oriented statistics, and generates
-an offline dashboard.
+enriches metadata, classifies papers into research topics, downloads selected
+open-access PDFs when requested, extracts references, writes research-oriented
+statistics, and generates an offline dashboard.
 
 The current project name is inherited from an earlier downloader prototype, but
 the current codebase is a survey pipeline for academic literature analysis.
@@ -76,7 +76,6 @@ Run a full Nature Aging survey:
 lsg run-survey `
   --journal nature-aging `
   --limit 50 `
-  --download-workers 4 `
   --papers-dir papers `
   --results-dir results `
   --analyze-references
@@ -91,15 +90,14 @@ without coupling the run to PDF availability:
 lsg run-survey `
   --journal nature-aging `
   --per-journal-limit 150 `
-  --metadata-only `
   --papers-dir papers `
   --results-dir results
 ```
 
-PDF download is optional. By default LitSurveyGrp tries to download accessible
-PDFs. Use `--metadata-only` when you want fast metadata, classification,
-statistics, and visualization first. Use `--download-pdfs` explicitly when you
-want the pipeline to try PDF acquisition, optionally with `--download-workers`.
+PDF download is optional and slower. `run-survey` is metadata-first by default;
+`--metadata-only` is accepted mostly as an explicit reminder. Use
+`--download-pdfs` when you want the pipeline to try PDF acquisition during
+discovery, optionally with `--download-workers`.
 
 Download PDFs later by top research value:
 
@@ -117,6 +115,21 @@ top papers. The ranking score combines citation count, journal tier, recency,
 review-entry value, classification confidence, and metadata completeness. The
 main hyperparameter is `--top`; users can also add `--min-value-score`,
 `--require-doi`, or `--include-existing`.
+
+Repeat runs reuse cached OpenAlex pages from `results/metadata_cache` by
+default. Override the cache location with `--metadata-cache-dir`, or disable it
+with `--no-metadata-cache`.
+
+Prepare top papers for LLM research agents:
+
+```powershell
+lsg prepare-agent-input `
+  --manifest results\classified_manifest.json `
+  --out-dir agent_inputs\demo `
+  --project-name demo `
+  --top-domains 10 `
+  --per-domain 30
+```
 
 Run a keyword-based survey across journals:
 
@@ -177,6 +190,7 @@ results/
   article_manifest.json
   enriched_manifest.json
   classified_manifest.json
+  metadata_cache/
   download_report.csv
   pdf_download_ranking.csv
   pdf_downloaded_manifest.json
@@ -337,14 +351,13 @@ lsg run-survey `
 lsg run-survey `
   --journal nature-aging `
   --per-journal-limit 150 `
-  --metadata-only `
   --papers-dir papers `
   --results-dir results
 ```
 
-PDF 下载是可选项。默认会尝试下载可访问 PDF；如果只想先快速获取数据和研究画像，
-使用 `--metadata-only`。需要 PDF 时再显式使用 `--download-pdfs`，也可以配合
-`--download-workers` 并发下载。
+PDF 下载是可选项且速度较慢。`run-survey` 默认就是 metadata-first；
+`--metadata-only` 主要作为显式提示保留。需要 PDF 时再使用 `--download-pdfs`，
+也可以配合 `--download-workers` 并发下载。
 
 也可以先完整跑完元数据、分类、统计和可视化，再按研究价值排序下载最值得看的 PDF：
 

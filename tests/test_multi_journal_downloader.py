@@ -24,6 +24,7 @@ from litsurveygrp.nature_aging_downloader import NatureJournalCrawler
 from litsurveygrp.paper_models import ArticleRecord
 from litsurveygrp.pdf_utils import PdfDownloader
 from litsurveygrp.provider_registry import JournalProviderRegistry
+from litsurveygrp.run_monitor import RunMonitor
 
 
 LISTING_HTML = """
@@ -133,6 +134,18 @@ def test_multi_journal_service_wires_shared_pdf_downloader(tmp_path):
     assert service.limit == 10
     assert service.per_journal_limit == 3
     assert service.download_timeout == 9
+    assert service.download_pdfs is False
+
+
+def test_multi_journal_service_uses_metadata_cache_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("LITSURVEYGRP_METADATA_CACHE_DIR", str(tmp_path / "env_cache"))
+
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path / "papers",
+        journals=[JournalConfig("Nature Aging", "nataging", "s43587-")],
+    )
+
+    assert service.metadata_cache_dir.name == "env_cache"
 
 
 class FakeCrossrefResponse:
@@ -225,6 +238,14 @@ def test_openalex_provider_discovers_article_records():
                     "pdf_url": "https://example.org/open.pdf",
                     "source": {"display_name": "International Journal of Computer Vision"},
                 },
+                "topics": [
+                    {
+                        "display_name": "Causal Representation Learning",
+                        "field": {"display_name": "Computer Science"},
+                        "subfield": {"display_name": "Artificial Intelligence"},
+                    }
+                ],
+                "concepts": [{"display_name": "Causal inference", "level": 2, "score": 0.71}],
                 "authorships": [
                     {
                         "author": {"display_name": "Alice Zhang"},
@@ -251,7 +272,60 @@ def test_openalex_provider_discovers_article_records():
     assert articles[0].pdf_url == "https://example.org/open.pdf"
     assert articles[0].abstract == "Large language models"
     assert articles[0].citation_count == 12
+    assert articles[0].authoritative_topics[0]["label"] == (
+        "Computer Science > Artificial Intelligence > Causal Representation Learning"
+    )
+    assert articles[0].authoritative_topics[1]["taxonomy"] == "OpenAlex Concepts"
     assert session.calls[0][1]["params"]["filter"] == "primary_location.source.issn:0920-5691,type:article,from_publication_date:2026-01-01,to_publication_date:2026-12-31"
+
+
+def test_openalex_provider_follows_cursor_pages_until_exhausted():
+    class PagedOpenAlexSession:
+        def __init__(self):
+            self.calls = []
+            self.pages = [
+                {"results": [{"title": "Page one", "doi": "https://doi.org/10.1/one"}], "meta": {"next_cursor": "next"}},
+                {"results": [{"title": "Page two", "doi": "https://doi.org/10.1/two"}], "meta": {"next_cursor": ""}},
+            ]
+
+        def get(self, url, params=None, timeout=None):
+            self.calls.append({"url": url, "params": dict(params or {}), "timeout": timeout})
+            return FakeCrossrefResponse(self.pages[len(self.calls) - 1])
+
+    session = PagedOpenAlexSession()
+    provider = OpenAlexSearchProvider("Causal Learning", session=session)
+
+    articles = provider.discover()
+
+    assert [article.title for article in articles] == ["Page one", "Page two"]
+    assert session.calls[0]["params"]["cursor"] == "*"
+    assert session.calls[1]["params"]["cursor"] == "next"
+    assert session.calls[0]["params"]["per-page"] == 200
+
+
+def test_openalex_provider_uses_metadata_cache(tmp_path):
+    data = {
+        "results": [
+            {
+                "title": "Cached OpenAlex paper",
+                "doi": "https://doi.org/10.1/cache",
+                "primary_location": {"source": {"display_name": "Cached Journal"}},
+            }
+        ]
+    }
+    session = FakeCrossrefSession(data)
+    provider = OpenAlexSearchProvider("cached query", session=session, metadata_cache_dir=tmp_path / "cache")
+
+    first = provider.discover()
+    second = OpenAlexSearchProvider(
+        "cached query",
+        session=FakeCrossrefSession({"results": []}),
+        metadata_cache_dir=tmp_path / "cache",
+    ).discover()
+
+    assert [article.title for article in first] == ["Cached OpenAlex paper"]
+    assert [article.title for article in second] == ["Cached OpenAlex paper"]
+    assert len(session.calls) == 1
 
 
 def test_openalex_provider_builds_year_range_filter():
@@ -352,6 +426,36 @@ def test_multi_journal_service_builds_openalex_search_source(tmp_path):
     assert source.query == "LLM causal discovery"
 
 
+def test_multi_journal_service_limits_openalex_search_provider_in_metadata_mode(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Search", provider="openalex-search", query="AI in Neuroscience")],
+        limit=500,
+        download_pdfs=False,
+    )
+
+    source = service.build_source(service.journals[0])
+
+    assert isinstance(source, OpenAlexSearchProvider)
+    assert source.limit == 500
+    assert source.build_params()["per-page"] == 200
+
+
+def test_multi_journal_service_prefers_per_journal_limit_for_openalex_search(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Search", provider="openalex-search", query="AI in Neuroscience")],
+        limit=500,
+        per_journal_limit=30,
+        download_pdfs=False,
+    )
+
+    source = service.build_source(service.journals[0])
+
+    assert source.limit == 30
+    assert source.build_params()["per-page"] == 30
+
+
 def test_multi_journal_service_accepts_custom_provider_registry(tmp_path):
     registry = JournalProviderRegistry()
     captured = {}
@@ -414,6 +518,36 @@ def test_layered_provider_deduplicates_and_records_provider_errors():
     assert provider.errors == ["FailingProvider:RuntimeError"]
 
 
+def test_layered_provider_updates_monitor_inside_provider_layers(tmp_path):
+    class ProviderOne:
+        def discover(self):
+            return [ArticleRecord(title="Layer one", doi="10/one")]
+
+    class ProviderTwo:
+        def discover(self):
+            return [
+                ArticleRecord(title="Layer one duplicate", doi="10/one"),
+                ArticleRecord(title="Layer two", doi="10/two"),
+            ]
+
+    monitor = RunMonitor(tmp_path / "results")
+    monitor.start("Provider test")
+    provider = LayeredJournalProvider(
+        JournalConfig("Layered", provider="layered", issn="1234-5678"),
+        provider_factories=[ProviderOne, ProviderTwo],
+        monitor=monitor,
+    )
+
+    articles = provider.discover()
+    status = json.loads((tmp_path / "results" / "run_status.json").read_text(encoding="utf-8"))
+
+    assert [article.title for article in articles] == ["Layer one", "Layer two"]
+    assert status["stage"] == "discover:layered"
+    assert status["processed"] == 2
+    assert status["metrics"]["active_provider"] == "ProviderTwo"
+    assert status["metrics"]["provider_new_records"] == 1
+
+
 def test_multi_journal_service_continues_when_one_journal_source_fails(tmp_path):
     service = MultiJournalDownloadService(
         output_dir=tmp_path,
@@ -447,6 +581,7 @@ def test_multi_journal_service_dry_run_marks_articles_and_writes_outputs(tmp_pat
         results_dir=results_dir,
         journals=[JournalConfig("Nature Aging", "nataging", "s43587-")],
         dry_run=True,
+        download_pdfs=True,
     )
     service.iter_articles = lambda: iter([
         ArticleRecord(title="Paper one", doi="10.1/one", journal="Nature Aging"),
@@ -485,7 +620,12 @@ def test_multi_journal_service_can_write_nature_aging_compat_output_names(tmp_pa
 
 
 def test_multi_journal_service_limit_counts_complete_pdfs_not_attempts(tmp_path):
-    service = MultiJournalDownloadService(output_dir=tmp_path, journals=[JournalConfig("Nature Aging", "nataging")], limit=1)
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path,
+        journals=[JournalConfig("Nature Aging", "nataging")],
+        limit=1,
+        download_pdfs=True,
+    )
     articles = [
         ArticleRecord(title="Skipped", doi="10/skip"),
         ArticleRecord(title="Complete", doi="10/one", local_pdf_path=tmp_path / "one.pdf"),
@@ -514,6 +654,7 @@ def test_multi_journal_service_can_skip_non_pdf_candidates(tmp_path):
         output_dir=tmp_path,
         journals=[JournalConfig("IJCV", provider="openalex", issn="0920-5691")],
         pdf_only_candidates=True,
+        download_pdfs=True,
     )
     service.iter_articles = lambda: iter([
         ArticleRecord(title="No PDF", doi="10/no"),
@@ -586,6 +727,7 @@ def test_multi_journal_service_can_download_with_parallel_workers(tmp_path):
         journals=[JournalConfig("Nature Aging", "nataging")],
         download_workers=2,
         progress_write_interval=1,
+        download_pdfs=True,
     )
     service.iter_articles = lambda: iter([
         ArticleRecord(title="One", doi="10/one", pdf_url="https://example.org/one.pdf"),

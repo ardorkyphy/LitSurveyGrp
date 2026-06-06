@@ -11,6 +11,8 @@ import json
 import os
 import re
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,10 +20,12 @@ import requests
 
 from litsurveygrp.paper_models import ArticleRecord
 from litsurveygrp.run_monitor import RunMonitor
+from litsurveygrp.multi_journal_downloader import openalex_authoritative_topics
 
 
 DEFAULT_SOURCES = ["openalex", "semantic-scholar", "europe-pmc", "crossref"]
 DEFAULT_REQUEST_INTERVAL_SECONDS = 1.0
+DEFAULT_FAILURE_BREAKER_THRESHOLD = 10
 CITATION_POLICY_MAX_AVAILABLE = "max_available"
 
 
@@ -35,6 +39,14 @@ class OpenAlexMetadataResolver:
         self.session = session or requests.Session()
         self.timeout = timeout
         self.api_key = api_key or os.environ.get("OPENALEX_API_KEY", "")
+
+    def can_help(self, article: ArticleRecord) -> bool:
+        missing = missing_metadata_fields(article)
+        supported = {
+            "doi", "journal", "article_type", "abstract", "authors",
+            "institutions", "publish_date", "citation_count", "authoritative_topics",
+        }
+        return bool(article.doi or article.title) and bool(missing & supported)
 
     def resolve(self, article: ArticleRecord) -> dict:
         data = self._fetch(article)
@@ -50,6 +62,7 @@ class OpenAlexMetadataResolver:
             "institutions": self._institutions(data),
             "abstract": openalex_abstract(data.get("abstract_inverted_index") or {}),
             "citation_count": data.get("cited_by_count"),
+            "authoritative_topics": openalex_authoritative_topics(data),
         }
 
     def _fetch(self, article: ArticleRecord) -> dict:
@@ -104,6 +117,11 @@ class SemanticScholarMetadataResolver:
         self.session = session or requests.Session()
         self.timeout = timeout
 
+    def can_help(self, article: ArticleRecord) -> bool:
+        missing = missing_metadata_fields(article)
+        supported = {"doi", "journal", "article_type", "abstract", "authors", "publish_date", "citation_count"}
+        return bool(article.doi or article.title) and bool(missing & supported)
+
     def resolve(self, article: ArticleRecord) -> dict:
         data = self._fetch(article)
         if not data:
@@ -153,6 +171,13 @@ class EuropePmcMetadataResolver:
         self.session = session or requests.Session()
         self.timeout = timeout
 
+    def can_help(self, article: ArticleRecord) -> bool:
+        missing = missing_metadata_fields(article)
+        supported = {"doi", "journal", "article_type", "abstract", "authors", "publish_date", "citation_count"}
+        if not bool(article.doi or article.title) or not missing & supported:
+            return False
+        return looks_biomedical(article)
+
     def resolve(self, article: ArticleRecord) -> dict:
         query = f'DOI:"{clean_doi(article.doi)}"' if article.doi else f'TITLE:"{article.title}"'
         if not article.doi and not article.title:
@@ -187,6 +212,14 @@ class CrossrefMetadataResolver:
     def __init__(self, session=None, timeout: int = 15):
         self.session = session or requests.Session()
         self.timeout = timeout
+
+    def can_help(self, article: ArticleRecord) -> bool:
+        missing = missing_metadata_fields(article)
+        supported = {
+            "doi", "journal", "article_type", "publish_date",
+            "authors", "institutions", "abstract", "citation_count",
+        }
+        return bool(article.doi or article.title) and bool(missing & supported)
 
     def resolve(self, article: ArticleRecord) -> dict:
         data = self._fetch(article)
@@ -240,6 +273,8 @@ class MetadataEnrichmentService:
         sleep_func=None,
         monotonic_func=None,
         monitor: RunMonitor | None = None,
+        workers: int = 1,
+        failure_breaker_threshold: int = DEFAULT_FAILURE_BREAKER_THRESHOLD,
     ):
         self.manifest_path = Path(manifest_path)
         load_local_env(self.manifest_path.parent)
@@ -252,6 +287,14 @@ class MetadataEnrichmentService:
         self.sleep_func = sleep_func or time.sleep
         self.monotonic_func = monotonic_func or time.monotonic
         self._last_request_at: float | None = None
+        self._last_request_by_source: dict[str, float] = {}
+        self._source_locks: dict[str, threading.Lock] = {}
+        self._source_locks_lock = threading.Lock()
+        self._breaker_lock = threading.Lock()
+        self.workers = max(1, int(workers or 1))
+        self.failure_breaker_threshold = max(0, int(failure_breaker_threshold or 0))
+        self._consecutive_failures: dict[str, int] = {}
+        self._disabled_sources: set[str] = set()
         self.monitor = monitor or RunMonitor(self.output_path.parent)
 
     def build_resolvers(self) -> list:
@@ -279,31 +322,62 @@ class MetadataEnrichmentService:
                 "total_records": len(source_articles),
             },
         )
-        articles = []
-        for index, article in enumerate(source_articles, start=1):
-            self.monitor.update(
-                stage="enrich",
-                message=f"Enriching record {index} of {len(source_articles)}",
-                processed=index - 1,
-                total=len(source_articles),
-                current_item=article.title or article.doi,
-            )
-            articles.append(self.enrich_article(article))
-            self.monitor.update(
-                stage="enrich",
-                message=f"Enriched record {index} of {len(source_articles)}",
-                processed=index,
-                total=len(source_articles),
-                current_item=article.title or article.doi,
-                metrics={
-                    "last_enrichment_status": article.enrichment_status,
-                    "last_metadata_sources": ", ".join(article.metadata_sources),
-                    "last_citation_source": article.citation_source,
-                },
-            )
+        articles = self.enrich_articles(source_articles)
         self.write_manifest(articles)
         self.monitor.finish("completed", f"Metadata enrichment finished with {len(articles)} records")
         return articles
+
+    def enrich_articles(self, source_articles: list[ArticleRecord]) -> list[ArticleRecord]:
+        if self.workers <= 1 or len(source_articles) <= 1:
+            articles = []
+            for index, article in enumerate(source_articles, start=1):
+                self.monitor.update(
+                    stage="enrich",
+                    message=f"Enriching record {index} of {len(source_articles)}",
+                    processed=index - 1,
+                    total=len(source_articles),
+                    current_item=article.title or article.doi,
+                )
+                articles.append(self.enrich_article(article))
+                self.monitor.update(
+                    stage="enrich",
+                    message=f"Enriched record {index} of {len(source_articles)}",
+                    processed=index,
+                    total=len(source_articles),
+                    current_item=article.title or article.doi,
+                    metrics=self.article_metrics(article),
+                )
+            return articles
+
+        articles: list[ArticleRecord | None] = [None] * len(source_articles)
+        completed = 0
+        with ThreadPoolExecutor(max_workers=self.workers) as executor:
+            futures = {
+                executor.submit(self.enrich_article, article): (index, article)
+                for index, article in enumerate(source_articles)
+            }
+            for future in as_completed(futures):
+                index, original = futures[future]
+                article = future.result()
+                articles[index] = article
+                completed += 1
+                self.monitor.update(
+                    stage="enrich",
+                    message=f"Enriched record {completed} of {len(source_articles)}",
+                    processed=completed,
+                    total=len(source_articles),
+                    current_item=article.title or original.title or article.doi or original.doi,
+                    metrics=self.article_metrics(article),
+                )
+        return [article for article in articles if article is not None]
+
+    def article_metrics(self, article: ArticleRecord) -> dict:
+        return {
+            "last_enrichment_status": article.enrichment_status,
+            "last_metadata_sources": ", ".join(article.metadata_sources),
+            "last_citation_source": article.citation_source,
+            "disabled_metadata_sources": ", ".join(sorted(self._disabled_sources)),
+        }
 
     def load_manifest(self) -> list[ArticleRecord]:
         with open(self.manifest_path, "r", encoding="utf-8") as handle:
@@ -317,9 +391,16 @@ class MetadataEnrichmentService:
         return self.output_path
 
     def enrich_article(self, article: ArticleRecord) -> ArticleRecord:
+        if self.has_sufficient_metadata(article):
+            article.enrichment_status = "sufficient_from_discovery"
+            return article
         found_sources = []
         errors = []
         for resolver in self.resolvers:
+            if self.is_source_disabled(resolver.name):
+                continue
+            if not self.resolver_can_help(resolver, article):
+                continue
             self.monitor.update(
                 stage="enrich",
                 message=f"Calling {resolver.name}",
@@ -327,10 +408,11 @@ class MetadataEnrichmentService:
                 metrics={"current_metadata_source": resolver.name},
             )
             try:
-                self.throttle()
+                self.throttle(resolver.name)
                 metadata = self._clean_metadata(resolver.resolve(article))
             except Exception as exc:
                 errors.append(f"{resolver.name}:{exc.__class__.__name__}")
+                self.record_source_failure(resolver.name, exc)
                 self.monitor.add_event("metadata_error", f"{resolver.name}: {exc.__class__.__name__}")
                 self.monitor.write()
                 continue
@@ -338,6 +420,7 @@ class MetadataEnrichmentService:
                 continue
             self.merge_metadata(article, metadata, resolver.name)
             found_sources.append(resolver.name)
+            self.record_source_success(resolver.name)
         article.metadata_sources = dedupe(list(article.metadata_sources) + found_sources)
         if found_sources:
             article.enrichment_status = "enriched"
@@ -347,19 +430,75 @@ class MetadataEnrichmentService:
             article.enrichment_status = "not_found"
         return article
 
-    def throttle(self) -> None:
+    def resolver_can_help(self, resolver, article: ArticleRecord) -> bool:
+        can_help = getattr(resolver, "can_help", None)
+        if can_help is None:
+            return True
+        return bool(can_help(article))
+
+    def throttle(self, source: str = "") -> None:
         """Respect a minimum interval between external metadata API calls."""
-        if self.request_interval <= 0:
-            self._last_request_at = self.monotonic_func()
+        key = source or "__global__"
+        with self._source_lock(key):
+            if self.request_interval <= 0:
+                self._last_request_at = self.monotonic_func()
+                if source:
+                    self._last_request_by_source[source] = self._last_request_at
+                return
+            now = self.monotonic_func()
+            last_request_at = self._last_request_by_source.get(key)
+            if last_request_at is not None:
+                elapsed = now - last_request_at
+                wait_seconds = self.request_interval - elapsed
+                if wait_seconds > 0:
+                    self.sleep_func(wait_seconds)
+                    now = self.monotonic_func()
+            self._last_request_at = now
+            self._last_request_by_source[key] = now
+
+    def _source_lock(self, source: str) -> threading.Lock:
+        with self._source_locks_lock:
+            if source not in self._source_locks:
+                self._source_locks[source] = threading.Lock()
+            return self._source_locks[source]
+
+    def has_sufficient_metadata(self, article: ArticleRecord) -> bool:
+        """Return whether discovery metadata is already strong enough to skip enrichment calls."""
+        return all([
+            bool(article.title),
+            bool(article.doi),
+            bool(article.abstract),
+            bool(article.authors),
+            bool(article.publish_date),
+            article.citation_count is not None,
+            bool(article.authoritative_topics),
+        ])
+
+    def is_source_disabled(self, source: str) -> bool:
+        with self._breaker_lock:
+            return source in self._disabled_sources
+
+    def record_source_success(self, source: str) -> None:
+        with self._breaker_lock:
+            self._consecutive_failures[source] = 0
+
+    def record_source_failure(self, source: str, exc: Exception) -> None:
+        if self.failure_breaker_threshold <= 0:
             return
-        now = self.monotonic_func()
-        if self._last_request_at is not None:
-            elapsed = now - self._last_request_at
-            wait_seconds = self.request_interval - elapsed
-            if wait_seconds > 0:
-                self.sleep_func(wait_seconds)
-                now = self.monotonic_func()
-        self._last_request_at = now
+        disabled = False
+        count = 0
+        with self._breaker_lock:
+            count = self._consecutive_failures.get(source, 0) + 1
+            self._consecutive_failures[source] = count
+            if count >= self.failure_breaker_threshold and source not in self._disabled_sources:
+                self._disabled_sources.add(source)
+                disabled = True
+        if disabled:
+            self.monitor.add_event(
+                "metadata_source_disabled",
+                f"{source} disabled after {count} consecutive {exc.__class__.__name__} errors",
+            )
+            self.monitor.write()
 
     def merge_metadata(self, article: ArticleRecord, metadata: dict, source: str) -> bool:
         changed = False
@@ -379,6 +518,11 @@ class MetadataEnrichmentService:
             changed = True
         if metadata.get("citation_count") is not None:
             changed = self.merge_citation_count(article, int(metadata["citation_count"]), source) or changed
+        if metadata.get("authoritative_topics"):
+            merged = merge_topic_lists(article.authoritative_topics, metadata["authoritative_topics"])
+            if merged != article.authoritative_topics:
+                article.authoritative_topics = merged
+                changed = True
         return changed
 
     def merge_citation_count(self, article: ArticleRecord, citation_count: int, source: str) -> bool:
@@ -434,6 +578,62 @@ def openalex_abstract(index: dict) -> str:
         for position in positions:
             words.append((position, word))
     return " ".join(word for _, word in sorted(words))
+
+
+def missing_metadata_fields(article: ArticleRecord) -> set[str]:
+    missing = set()
+    if not article.doi:
+        missing.add("doi")
+    if not article.journal:
+        missing.add("journal")
+    if not article.article_type:
+        missing.add("article_type")
+    if not article.publish_date:
+        missing.add("publish_date")
+    if not article.authors:
+        missing.add("authors")
+    if not article.institutions:
+        missing.add("institutions")
+    if not article.abstract:
+        missing.add("abstract")
+    if article.citation_count is None:
+        missing.add("citation_count")
+    if not article.authoritative_topics:
+        missing.add("authoritative_topics")
+    return missing
+
+
+def looks_biomedical(article: ArticleRecord) -> bool:
+    text = " ".join([
+        article.title or "",
+        article.abstract or "",
+        article.journal or "",
+        article.article_type or "",
+        " ".join(topic.get("label", "") for topic in article.authoritative_topics or []),
+    ]).lower()
+    terms = [
+        "medicine", "medical", "clinical", "biomedical", "biology", "neuroscience",
+        "brain", "neuro", "disease", "patient", "therapy", "diagnosis", "health",
+    ]
+    return any(term in text for term in terms)
+
+
+def merge_topic_lists(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    merged = []
+    seen = set()
+    for item in list(existing or []) + list(incoming or []):
+        if not isinstance(item, dict):
+            continue
+        key = (
+            str(item.get("source") or "").casefold(),
+            str(item.get("taxonomy") or "").casefold(),
+            str(item.get("label") or "").casefold(),
+        )
+        if not key[2] or key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(item))
+    return merged
 
 
 def published_date(item: dict) -> str:
@@ -532,6 +732,7 @@ def run_from_args(args) -> int:
         output_path=Path(args.out) if getattr(args, "out", None) else None,
         timeout=getattr(args, "timeout", 15),
         request_interval=getattr(args, "request_interval", DEFAULT_REQUEST_INTERVAL_SECONDS),
+        workers=getattr(args, "workers", 1),
     )
     service.run()
     return 0

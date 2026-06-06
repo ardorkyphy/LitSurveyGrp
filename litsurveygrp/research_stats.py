@@ -34,6 +34,7 @@ class ResearchStatsWriter:
             "summary": self.out_dir / "summary.json",
             "research_profile": self.out_dir / "research_profile.json",
             "subdomains": self.out_dir / "subdomain_stats.csv",
+            "classification_sources": self.out_dir / "classification_source_stats.csv",
             "topic_profiles": self.out_dir / "topic_profiles.csv",
             "years": self.out_dir / "year_trend.csv",
             "authors": self.out_dir / "author_stats.csv",
@@ -50,7 +51,19 @@ class ResearchStatsWriter:
         }
         self._write_json(outputs["summary"], self.summary(articles))
         self._write_json(outputs["research_profile"], self.research_profile(articles))
-        self._write_rows(outputs["subdomains"], self.subdomain_stats(articles), ["subdomain", "paper_count", "citation_count"])
+        self._write_rows(
+            outputs["subdomains"],
+            self.subdomain_stats(articles),
+            [
+                "subdomain", "paper_count", "citation_count", "pubmed_mesh_count",
+                "openalex_count", "crossref_count", "local_rule_count", "unclassified_count",
+            ],
+        )
+        self._write_rows(
+            outputs["classification_sources"],
+            self.classification_source_stats(articles),
+            ["classification_source", "paper_count", "citation_count"],
+        )
         self._write_rows(
             outputs["topic_profiles"],
             self.topic_profiles(articles),
@@ -110,10 +123,11 @@ class ResearchStatsWriter:
             "review_papers": sum(is_review_article(article) for article in articles),
             "research_papers": sum(is_research_article(article) for article in articles),
             "reference_pool_size": len(self.reference_insights(articles)),
-            "top_subdomains": self.subdomain_stats(articles)[: self.top_n],
+            "top_subdomains": top_rows_with_other(self.subdomain_stats(articles), self.top_n, "subdomain"),
             "top_authors_by_citations": self.author_stats(articles)[: self.top_n],
             "top_institutions_by_citations": self.institution_stats(articles)[: self.top_n],
             "top_journals_by_citations": self.journal_stats(articles)[: self.top_n],
+            "classification_sources": self.classification_source_stats(articles),
         }
 
     def research_profile(self, articles: list[ArticleRecord]) -> dict:
@@ -133,7 +147,27 @@ class ResearchStatsWriter:
         }
 
     def subdomain_stats(self, articles: list[ArticleRecord]) -> list[dict]:
-        return self._group_counts(articles, lambda article: [article.subdomain or "Other"], "subdomain")
+        rows = self._group_counts(articles, lambda article: [article.subdomain or "Other"], "subdomain")
+        source_counts = defaultdict(Counter)
+        for article in articles:
+            subdomain = article.subdomain or "Other"
+            source = article.classification_source or "unknown"
+            source_counts[subdomain][source] += 1
+        for row in rows:
+            counts = source_counts[row["subdomain"]]
+            row["pubmed_mesh_count"] = counts["pubmed_mesh"]
+            row["openalex_count"] = counts["openalex"]
+            row["crossref_count"] = counts["crossref"]
+            row["local_rule_count"] = counts["local_rule"]
+            row["unclassified_count"] = counts["none"] + counts["unknown"]
+        return rows
+
+    def classification_source_stats(self, articles: list[ArticleRecord]) -> list[dict]:
+        return self._group_counts(
+            articles,
+            lambda article: [article.classification_source or "unknown"],
+            "classification_source",
+        )
 
     def topic_profiles(self, articles: list[ArticleRecord]) -> list[dict]:
         groups = defaultdict(list)
@@ -508,6 +542,21 @@ def dedupe(values: list[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def top_rows_with_other(rows: list[dict], top_n: int, label_key: str) -> list[dict]:
+    if top_n <= 0 or len(rows) <= top_n:
+        return [dict(row) for row in rows]
+    head = [dict(row) for row in rows[:top_n]]
+    tail = rows[top_n:]
+    other = {
+        label_key: f"其他领域 ({len(tail)} 类)",
+        "paper_count": sum(int(row.get("paper_count") or 0) for row in tail),
+        "citation_count": sum(int(row.get("citation_count") or 0) for row in tail),
+    }
+    for key in ["pubmed_mesh_count", "openalex_count", "crossref_count", "local_rule_count", "unclassified_count"]:
+        other[key] = sum(int(row.get(key) or 0) for row in tail)
+    return head + [other]
 
 
 def run_from_args(args) -> int:

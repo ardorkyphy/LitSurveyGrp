@@ -5,7 +5,7 @@ import html
 import json
 from pathlib import Path
 
-from litsurveygrp.research_stats import ResearchStatsWriter
+from litsurveygrp.research_stats import ResearchStatsWriter, top_rows_with_other
 
 
 class ResearchDashboardWriter:
@@ -28,7 +28,8 @@ class ResearchDashboardWriter:
     def render(self, articles) -> str:
         summary = self.stats.summary(articles)
         profile = self.stats.research_profile(articles)
-        subdomains = self.stats.subdomain_stats(articles)[: self.top_n]
+        all_subdomains = self.stats.subdomain_stats(articles)
+        subdomains = top_rows_with_other(all_subdomains, self.top_n, "subdomain")
         topic_profiles = self.stats.topic_profiles(articles)[: self.top_n]
         years = self.stats.year_trend(articles)
         authors = self.stats.author_stats(articles)[: self.top_n]
@@ -67,7 +68,10 @@ class ResearchDashboardWriter:
             self.metric_strip(summary),
             self.panel("研究画像摘要", self.profile_brief(profile), wide=True),
             '<section class="grid two">',
-            self.panel("研究子领域分布", self.bar_chart(subdomains, "subdomain", "paper_count", "citation_count")),
+            self.panel(
+                "研究子领域分布",
+                self.covered_bar_chart(subdomains, summary.get("total_papers", 0), "subdomain", "paper_count", "citation_count"),
+            ),
             self.panel("年份趋势", self.year_chart(years)),
             "</section>",
             self.panel("子领域档案", self.topic_profile_table(topic_profiles), wide=True),
@@ -167,6 +171,12 @@ class ResearchDashboardWriter:
             )
         return '<div class="bar-chart">' + "".join(items) + "</div>"
 
+    def covered_bar_chart(self, rows: list[dict], total: int, label_key: str, count_key: str, citation_key: str) -> str:
+        chart = self.bar_chart(rows, label_key, count_key, citation_key)
+        shown = sum(int(row.get(count_key) or 0) for row in rows)
+        note = f"当前图表覆盖 {shown}/{int(total or 0)} 篇；超过 Top {self.top_n} 的领域合并为其他领域。"
+        return chart + f'<p class="chart-note">{escape(note)}</p>'
+
     def topic_profile_table(self, rows: list[dict]) -> str:
         if not rows:
             return '<p class="empty">No data</p>'
@@ -214,33 +224,26 @@ class ResearchDashboardWriter:
     def year_chart(self, rows: list[dict]) -> str:
         if not rows:
             return '<p class="empty">No data</p>'
-        clean_rows = [row for row in rows if row.get("year") != "Unknown"]
-        if not clean_rows:
-            return self.bar_chart(rows, "year", "paper_count", "citation_count")
-        max_count = max(int(row.get("paper_count") or 0) for row in clean_rows) or 1
-        if len(clean_rows) == 1:
-            points = [(160, 32)]
-        else:
-            points = []
-            for index, row in enumerate(clean_rows):
-                x = 32 + index * (296 / (len(clean_rows) - 1))
-                y = 168 - (int(row.get("paper_count") or 0) / max_count * 136)
-                points.append((round(x, 2), round(y, 2)))
-        point_attr = " ".join(f"{x},{y}" for x, y in points)
-        circles = "".join(f'<circle cx="{x}" cy="{y}" r="4"></circle>' for x, y in points)
-        labels = "".join(
-            f'<span style="left:{round((x - 32) / 296 * 100, 2)}%">{escape(row.get("year"))}</span>'
-            for (x, _), row in zip(points, clean_rows)
-        )
+        body = []
+        max_count = max(int(row.get("paper_count") or 0) for row in rows) or 1
+        for row in rows:
+            count = int(row.get("paper_count") or 0)
+            citations = int(row.get("citation_count") or 0)
+            width = max(4, round(count / max_count * 100, 2))
+            body.append(
+                "<tr>"
+                f'<td>{escape(row.get("year", ""))}</td>'
+                f'<td class="number">{count}</td>'
+                f'<td class="number">{citations}</td>'
+                '<td><div class="mini-track">'
+                f'<div class="mini-fill" style="width:{width}%"></div>'
+                "</div></td>"
+                "</tr>"
+            )
         return (
-            '<div class="line-wrap">'
-            '<svg viewBox="0 0 360 190" role="img" aria-label="Year trend">'
-            '<line x1="28" y1="170" x2="340" y2="170"></line>'
-            '<line x1="28" y1="24" x2="28" y2="170"></line>'
-            f'<polyline points="{point_attr}"></polyline>{circles}'
-            "</svg>"
-            f'<div class="year-labels">{labels}</div>'
-            "</div>"
+            '<div class="table-wrap year-table"><table>'
+            '<thead><tr><th>年份</th><th class="number">论文</th><th class="number">引用</th><th>规模</th></tr></thead>'
+            f"<tbody>{''.join(body)}</tbody></table></div>"
         )
 
     def paper_table(self, rows: list[dict]) -> str:
@@ -310,19 +313,16 @@ h2 { margin:0 0 14px; font-size:18px; line-height:1.25; }
 .brief-card p { margin:0 0 7px; color:var(--ink); font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
 .brief-card p:last-child { margin-bottom:0; }
 .brief-note { margin:12px 0 0; color:var(--muted); font-size:13px; }
+.chart-note { margin:10px 0 0; color:var(--muted); font-size:12px; }
 .bar-chart { display:grid; gap:10px; }
 .bar-row { display:grid; grid-template-columns:minmax(120px, 1.2fr) minmax(120px, 2fr) 94px; gap:10px; align-items:center; min-height:24px; }
 .bar-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); font-size:13px; }
 .bar-track { height:12px; border-radius:8px; background:#edf2f7; overflow:hidden; }
 .bar-fill { height:100%; border-radius:8px; background:linear-gradient(90deg, var(--green), var(--blue)); }
 .bar-value { color:var(--muted); font-size:12px; text-align:right; white-space:nowrap; display:flex; justify-content:flex-end; gap:6px; }
-.line-wrap { position:relative; padding-bottom:22px; }
-svg { width:100%; height:240px; display:block; }
-svg line { stroke:var(--line); stroke-width:2; }
-svg polyline { fill:none; stroke:var(--gold); stroke-width:4; stroke-linejoin:round; stroke-linecap:round; }
-svg circle { fill:var(--blue); }
-.year-labels { position:absolute; left:32px; right:32px; bottom:0; height:18px; }
-.year-labels span { position:absolute; transform:translateX(-50%); color:var(--muted); font-size:12px; white-space:nowrap; }
+.mini-track { height:10px; min-width:110px; border-radius:8px; background:#edf2f7; overflow:hidden; }
+.mini-fill { height:100%; border-radius:8px; background:var(--gold); }
+.year-table table { min-width:420px; }
 .table-wrap { overflow:auto; }
 table { width:100%; border-collapse:collapse; min-width:760px; }
 th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; font-size:13px; vertical-align:top; }

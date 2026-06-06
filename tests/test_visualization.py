@@ -64,6 +64,9 @@ def test_research_dashboard_writer_generates_offline_html(tmp_path):
     assert "Biomarker paper" in html
     assert "Core cited reference" in html
     assert "Topic_Biomarker" in html
+    assert '<div class="table-wrap year-table">' in html
+    assert '<th>年份</th><th class="number">论文</th><th class="number">引用</th><th>规模</th>' in html
+    assert 'aria-label="Year trend"' not in html
     assert "https://cdn" not in html
     assert "<script id=\"dashboard-data\"" in html
 

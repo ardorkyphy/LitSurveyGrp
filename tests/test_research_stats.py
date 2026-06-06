@@ -54,6 +54,7 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
             citation_count=30,
             citation_source="openalex",
             classification_confidence=0.8,
+            classification_source="pubmed_mesh",
             references=[
                 ReferenceRecord(
                     title="Foundational biomarker reference",
@@ -80,6 +81,7 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
             subdomain="Review",
             citation_count=12,
             citation_source="crossref",
+            classification_source="local_rule",
         ),
     ]
     manifest.write_text(json.dumps([article.to_manifest_dict() for article in articles], ensure_ascii=False), encoding="utf-8")
@@ -90,6 +92,7 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
     profile = json.loads(outputs["research_profile"].read_text(encoding="utf-8"))
 
     assert outputs["subdomains"].name == "subdomain_stats.csv"
+    assert outputs["classification_sources"].name == "classification_source_stats.csv"
     assert outputs["research_profile"].name == "research_profile.json"
     assert outputs["topic_profiles"].name == "topic_profiles.csv"
     assert outputs["paper_recommendations"].name == "paper_recommendations.csv"
@@ -109,6 +112,7 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
     assert summary["review_papers"] == 1
     assert summary["research_papers"] == 1
     assert summary["reference_pool_size"] == 1
+    assert {row["classification_source"] for row in summary["classification_sources"]} == {"local_rule", "pubmed_mesh"}
     assert "download_status" not in summary
     assert profile["topic_profiles"][0]["subdomain"] == "Topic_Biomarker"
     assert profile["core_references"][0]["title"] == "Foundational biomarker reference"
@@ -121,6 +125,7 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
     team_rows = read_csv(outputs["teams"])
     journal_rows = read_csv(outputs["journals"])
     subdomain_year_rows = read_csv(outputs["subdomain_years"])
+    source_rows = read_csv(outputs["classification_sources"])
     bucket_rows = read_csv(outputs["citation_buckets"])
     collaboration_rows = read_csv(outputs["collaboration"])
 
@@ -137,8 +142,25 @@ def test_research_stats_writer_builds_research_outputs(tmp_path):
     assert journal_rows[0]["journal"] == "Nature Aging"
     assert subdomain_year_rows[0]["year"] == "2025"
     assert subdomain_year_rows[1]["subdomain"] == "Topic_Biomarker"
+    assert source_rows[0]["paper_count"] == "1"
+    assert {row["classification_source"] for row in source_rows} == {"local_rule", "pubmed_mesh"}
     assert bucket_rows[0]["citation_bucket"] == "10-49"
     assert collaboration_rows[0]["collaboration_type"] == "small_team_multi_institution"
+
+
+def test_summary_top_subdomains_fold_tail_into_other(tmp_path):
+    manifest = tmp_path / "classified_manifest.json"
+    articles = [
+        ArticleRecord(title=f"Paper {index}", subdomain=f"Topic_{index}", citation_count=index)
+        for index in range(5)
+    ]
+    manifest.write_text(json.dumps([article.to_manifest_dict() for article in articles]), encoding="utf-8")
+    writer = ResearchStatsWriter(manifest, top_n=2)
+
+    summary = writer.summary(articles)
+
+    assert sum(row["paper_count"] for row in summary["top_subdomains"]) == 5
+    assert summary["top_subdomains"][-1]["subdomain"] == "其他领域 (3 类)"
 
 
 def test_research_stats_cli_adapter_runs(monkeypatch, tmp_path):

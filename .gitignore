@@ -24,6 +24,7 @@ dist/
 # LitSurveyGrp generated outputs
 papers/
 results/
+agent_inputs/
 article_manifest.json
 multi_journal_manifest.json
 classified_manifest.json
@@ -36,6 +37,7 @@ pdf_download_ranking.csv
 pdf_download_summary.json
 run_monitor.html
 run_status.json
+*.log
 basic_stats.json
 source_papers.ris
 reference_papers.ris
@@ -44,6 +46,9 @@ classified/
 stats/
 visualization/
 references/
+*/papers/
+*/results/
+*/agent_inputs/
 
 # Local model/cache data
 .cache/

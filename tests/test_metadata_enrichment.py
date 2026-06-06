@@ -5,6 +5,7 @@ import json
 from litsurveygrp.enrichment.metadata_enrichment import (
     CrossrefMetadataResolver,
     DEFAULT_REQUEST_INTERVAL_SECONDS,
+    EuropePmcMetadataResolver,
     MetadataEnrichmentService,
     OpenAlexMetadataResolver,
     load_local_env,
@@ -45,6 +46,16 @@ class FakeResolver:
         return self.metadata
 
 
+class FailingResolver:
+    def __init__(self, name="semantic-scholar"):
+        self.name = name
+        self.calls = 0
+
+    def resolve(self, article):
+        self.calls += 1
+        raise RuntimeError("offline")
+
+
 def test_openalex_abstract_reconstructs_inverted_index():
     assert openalex_abstract({"This": [0], "is": [1], "aging": [2]}) == "This is aging"
 
@@ -58,6 +69,13 @@ def test_openalex_resolver_parses_core_metadata():
         "cited_by_count": 42,
         "abstract_inverted_index": {"Aging": [0], "biology": [1]},
         "primary_location": {"source": {"display_name": "Nature Aging"}},
+        "topics": [
+            {
+                "display_name": "Causal Learning",
+                "field": {"display_name": "Computer Science"},
+                "subfield": {"display_name": "Artificial Intelligence"},
+            }
+        ],
         "authorships": [
             {
                 "author": {"display_name": "Alice Zhang"},
@@ -76,6 +94,7 @@ def test_openalex_resolver_parses_core_metadata():
     assert metadata["institutions"] == ["Institute A"]
     assert metadata["abstract"] == "Aging biology"
     assert metadata["citation_count"] == 42
+    assert metadata["authoritative_topics"][0]["label"] == "Computer Science > Artificial Intelligence > Causal Learning"
     assert "doi:10.1038%2Ftest" in session.calls[0][0]
     assert session.calls[0][1]["params"]["api_key"] == "test-key"
 
@@ -162,6 +181,60 @@ def test_metadata_enrichment_service_merges_sources_and_writes_manifest(tmp_path
     assert saved[0]["citation_counts"] == {"openalex": 0, "semantic-scholar": 11}
 
 
+def test_metadata_enrichment_skips_api_calls_when_discovery_metadata_is_sufficient():
+    resolver = FailingResolver("openalex")
+    article = ArticleRecord(
+        title="Complete paper",
+        doi="10.1/complete",
+        abstract="Existing abstract",
+        authors=["Alice"],
+        publish_date="2026-01-01",
+        citation_count=5,
+        authoritative_topics=[{"source": "openalex", "taxonomy": "OpenAlex Topics", "label": "AI"}],
+    )
+    service = MetadataEnrichmentService("manifest.json", resolvers=[resolver], request_interval=0)
+
+    enriched = service.enrich_article(article)
+
+    assert resolver.calls == 0
+    assert enriched.enrichment_status == "sufficient_from_discovery"
+
+
+def test_metadata_enrichment_disables_source_after_repeated_failures():
+    failing = FailingResolver("semantic-scholar")
+    working = FakeResolver("crossref", {"journal": "Journal"})
+    service = MetadataEnrichmentService(
+        "manifest.json",
+        resolvers=[failing, working],
+        request_interval=0,
+        failure_breaker_threshold=2,
+    )
+
+    articles = [ArticleRecord(title=f"Paper {index}") for index in range(4)]
+    enriched = [service.enrich_article(article) for article in articles]
+
+    assert failing.calls == 2
+    assert "semantic-scholar" in service._disabled_sources
+    assert [article.journal for article in enriched] == ["Journal"] * 4
+
+
+def test_metadata_enrichment_parallel_workers_preserve_manifest_order(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    articles = [ArticleRecord(title=f"Paper {index}") for index in range(5)]
+    manifest.write_text(json.dumps([article.to_manifest_dict() for article in articles]), encoding="utf-8")
+    service = MetadataEnrichmentService(
+        manifest,
+        resolvers=[FakeResolver("crossref", {"journal": "Journal"})],
+        request_interval=0,
+        workers=3,
+    )
+
+    enriched = service.run()
+
+    assert [article.title for article in enriched] == [f"Paper {index}" for index in range(5)]
+    assert [article.journal for article in enriched] == ["Journal"] * 5
+
+
 def test_metadata_enrichment_service_keeps_existing_abstract_source_priority():
     article = ArticleRecord(title="Paper", abstract="Existing abstract.", abstract_source="provider")
     service = MetadataEnrichmentService(
@@ -207,7 +280,7 @@ def test_metadata_enrichment_default_request_interval_is_one_second():
     assert service.request_interval == DEFAULT_REQUEST_INTERVAL_SECONDS
 
 
-def test_metadata_enrichment_service_throttles_between_resolver_calls():
+def test_metadata_enrichment_service_throttles_per_source_not_globally():
     now = {"value": 100.0}
     sleeps = []
 
@@ -231,7 +304,50 @@ def test_metadata_enrichment_service_throttles_between_resolver_calls():
 
     service.enrich_article(ArticleRecord(title="Paper"))
 
+    assert sleeps == []
+
+
+def test_metadata_enrichment_service_throttles_repeated_calls_to_same_source():
+    now = {"value": 100.0}
+    sleeps = []
+
+    def fake_monotonic():
+        return now["value"]
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        now["value"] += seconds
+
+    service = MetadataEnrichmentService(
+        "manifest.json",
+        resolvers=[FakeResolver("openalex", {"citation_count": 1})],
+        request_interval=3.0,
+        sleep_func=fake_sleep,
+        monotonic_func=fake_monotonic,
+    )
+
+    service.enrich_article(ArticleRecord(title="Paper 1"))
+    service.enrich_article(ArticleRecord(title="Paper 2"))
+
     assert sleeps == [3.0]
+
+
+def test_metadata_enrichment_resolver_can_help_skips_sources_that_cannot_fill_missing_fields():
+    complete_except_topics = ArticleRecord(
+        title="Paper",
+        doi="10.1/test",
+        journal="Journal",
+        article_type="journal-article",
+        publish_date="2026-01-01",
+        authors=["Alice"],
+        institutions=["Institute"],
+        abstract="Abstract.",
+        citation_count=3,
+    )
+
+    assert OpenAlexMetadataResolver().can_help(complete_except_topics) is True
+    assert CrossrefMetadataResolver().can_help(complete_except_topics) is False
+    assert EuropePmcMetadataResolver().can_help(complete_except_topics) is False
 
 
 def test_metadata_enrichment_service_can_disable_throttle_for_tests():

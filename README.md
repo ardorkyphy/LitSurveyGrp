@@ -3,8 +3,13 @@
 Open literature survey automation for research discovery.
 
 LitSurveyGrp helps researchers discover papers, enrich scholarly metadata,
-collect accessible PDFs, group papers into research topics, analyze cited
-references, and generate research-oriented statistics and offline dashboards.
+group papers into research topics, analyze cited references, collect selected
+accessible PDFs, and generate research-oriented statistics and offline
+dashboards.
+
+The default workflow is metadata-first. It quickly collects candidate papers,
+classifies and ranks them, then lets you download or analyze only the most
+valuable papers.
 
 ## Quick Start
 
@@ -44,10 +49,12 @@ Minimal metadata-first run:
 lsg run-survey `
   --journal nature-aging `
   --per-journal-limit 10 `
-  --metadata-only `
   --papers-dir papers `
   --results-dir results
 ```
+
+`run-survey` does not download PDFs by default. It writes metadata, topic
+classification, statistics, and visualization first.
 
 Run a Nature Aging survey:
 
@@ -55,7 +62,6 @@ Run a Nature Aging survey:
 lsg run-survey `
   --journal nature-aging `
   --limit 50 `
-  --download-workers 4 `
   --papers-dir papers `
   --results-dir results `
   --analyze-references
@@ -68,15 +74,13 @@ large number of completed PDFs:
 lsg run-survey `
   --journal nature-aging `
   --per-journal-limit 150 `
-  --metadata-only `
   --papers-dir papers `
   --results-dir results
 ```
 
-PDF download is optional. By default LitSurveyGrp tries to download accessible
-PDFs. Use `--metadata-only` when you want fast metadata, classification,
-statistics, and visualization first. Use `--download-pdfs` explicitly when you
-want the pipeline to try PDF acquisition.
+PDF download is optional and slower. Use `--download-pdfs` explicitly only when
+you want the discovery pipeline itself to try PDF acquisition. For larger
+surveys, prefer the staged `download-pdfs` command below.
 
 Download only the highest-value PDFs after a metadata-first run:
 
@@ -107,6 +111,21 @@ lsg run-survey `
   --results-dir results
 ```
 
+Repeat runs reuse cached OpenAlex pages from `results/metadata_cache` by
+default. Override the cache location with `--metadata-cache-dir`, or disable it
+with `--no-metadata-cache`.
+
+Prepare the top papers for LLM research agents:
+
+```powershell
+lsg prepare-agent-input `
+  --manifest results\classified_manifest.json `
+  --out-dir agent_inputs\demo `
+  --project-name demo `
+  --top-domains 10 `
+  --per-domain 30
+```
+
 Clean generated experiment outputs:
 
 ```powershell
@@ -126,6 +145,7 @@ results/
   article_manifest.json
   enriched_manifest.json
   classified_manifest.json
+  metadata_cache/
   pdf_download_ranking.csv
   pdf_downloaded_manifest.json
   pdf_download_report.csv
@@ -143,6 +163,7 @@ Important files:
 
 - `classified_manifest.json`: final paper metadata after enrichment and topic
   classification.
+- `metadata_cache/`: cached metadata API pages for faster repeated runs.
 - `stats/research_profile.json`: compact research profile for dashboard use.
 - `stats/topic_profiles.csv`: topic distribution, representative papers, and
   topic trends.
@@ -169,6 +190,13 @@ results/run_monitor.html
 It refreshes automatically and shows the active stage, processed record count,
 last paper, current provider/API source, and recent errors or warnings.
 
+You can also open or watch it from the CLI:
+
+```powershell
+lsg monitor --results-dir results --open
+lsg monitor --results-dir results --watch
+```
+
 ## Notes
 
 - PDF acquisition is best-effort and depends on open-access availability,
@@ -194,8 +222,8 @@ python -m pytest tests -q
 git status --short
 ```
 
-Confirm that `.env`, `papers/`, `results/`, PDFs, model caches, and other local
-experiment outputs are not staged.
+Confirm that `.env`, `papers/`, `results/`, `agent_inputs/`, PDFs, model
+caches, and other local experiment outputs are not staged.
 
 ## 中文简介
 
@@ -214,9 +242,9 @@ lsg --help
 python -m pip install -r requirements-dev.txt
 ```
 
-大规模实验建议使用 `--per-journal-limit` 控制抓取文章记录数，并使用
-`--metadata-only` 先快速生成元数据、分类、统计和可视化。需要 PDF 时再显式使用
-`--download-pdfs`，并可配合 `--download-workers` 并发下载可访问 PDF。
+默认流程是 metadata-first：先快速生成候选论文元数据、权威 topic 分类、统计和可视化。
+需要 PDF 时再显式使用 `--download-pdfs`，并可配合 `--download-workers`
+并发下载可访问 PDF。
 
 推荐的大规模流程是：先只获取元数据并完成分类统计，再按研究价值下载 Top PDF：
 

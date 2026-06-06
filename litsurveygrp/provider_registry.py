@@ -7,7 +7,10 @@ simple provider-name contract used by the CLI and journal catalog.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Protocol
+
+from litsurveygrp.run_monitor import RunMonitor
 
 
 class DiscoveryProvider(Protocol):
@@ -26,6 +29,9 @@ class ProviderBuildContext:
     to_year: int | None = None
     limit: int | None = None
     timeout: int = 15
+    monitor: RunMonitor | None = None
+    metadata_cache_dir: Path | None = None
+    use_metadata_cache: bool = True
 
 
 ProviderFactory = Callable[[Any, ProviderBuildContext], DiscoveryProvider]
