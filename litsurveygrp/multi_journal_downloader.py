@@ -560,6 +560,8 @@ class LayeredJournalProvider:
         to_year: int | None = None,
         provider_factories: list | None = None,
         monitor: RunMonitor | None = None,
+        metadata_cache_dir: Path | None = None,
+        use_metadata_cache: bool = True,
     ):
         self.config = config
         self.year = year
@@ -570,6 +572,8 @@ class LayeredJournalProvider:
         self.provider_factories = provider_factories
         self.errors: list[str] = []
         self.monitor = monitor
+        self.metadata_cache_dir = metadata_cache_dir
+        self.use_metadata_cache = use_metadata_cache
 
     def discover(self) -> list[ArticleRecord]:
         """Return de-duplicated articles from all available provider layers."""
@@ -640,6 +644,8 @@ class LayeredJournalProvider:
                 from_year=self.from_year,
                 to_year=self.to_year,
                 monitor=self.monitor,
+                metadata_cache_dir=self.metadata_cache_dir,
+                use_metadata_cache=self.use_metadata_cache,
             ))
             providers.append(CrossrefJournalProvider(
                 self.config,
@@ -753,6 +759,8 @@ def build_default_provider_registry() -> JournalProviderRegistry:
             from_year=context.from_year,
             to_year=context.to_year,
             monitor=context.monitor,
+            metadata_cache_dir=context.metadata_cache_dir,
+            use_metadata_cache=context.use_metadata_cache,
         ),
     )
     return registry

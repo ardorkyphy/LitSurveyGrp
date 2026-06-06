@@ -127,6 +127,72 @@ class OpenAIResponsesClient(LLMClient):
         raise LLMError(f"OpenAI request failed: {last_error}")
 
 
+class DeepSeekChatClient(LLMClient):
+    """DeepSeek OpenAI-compatible chat-completions client."""
+
+    DEFAULT_BASE_URL = "https://api.deepseek.com"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: int = 120,
+        max_retries: int = 2,
+    ):
+        load_local_env()
+        self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        self.base_url = (base_url or os.environ.get("DEEPSEEK_BASE_URL", "") or self.DEFAULT_BASE_URL).rstrip("/")
+        self.timeout = timeout
+        self.max_retries = max_retries
+        if not self.api_key:
+            raise LLMError("DEEPSEEK_API_KEY is required for DeepSeekChatClient")
+
+    @property
+    def api_url(self) -> str:
+        if self.base_url.endswith("/chat/completions"):
+            return self.base_url
+        return f"{self.base_url}/chat/completions"
+
+    def complete_json(self, *, system: str, user: str, schema: dict, model: str, cache_key: str) -> dict:
+        schema_text = json.dumps(schema, ensure_ascii=False)
+        payload = {
+            "model": model or default_model_for_provider("deepseek"),
+            "messages": [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": (
+                        f"{user}\n\nReturn only one valid JSON object that matches this JSON Schema: "
+                        f"{schema_text}"
+                    ),
+                },
+            ],
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                req = request.Request(
+                    self.api_url,
+                    data=data,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                with request.urlopen(req, timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                return parse_chat_completion_json(body)
+            except Exception as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    time.sleep(2 ** attempt)
+        raise LLMError(f"DeepSeek request failed: {last_error}")
+
+
 def parse_response_json(body: dict) -> dict:
     for item in body.get("output") or []:
         for content in item.get("content") or []:
@@ -138,16 +204,78 @@ def parse_response_json(body: dict) -> dict:
     raise LLMError("No JSON text found in Responses API output")
 
 
-def build_llm_client(provider: str = "openai", cache_dir: Path | None = None) -> LLMClient:
+def parse_chat_completion_json(body: dict) -> dict:
+    choices = body.get("choices") or []
+    if choices:
+        message = choices[0].get("message") or {}
+        content = message.get("content") or ""
+        if isinstance(content, str) and content.strip():
+            return parse_json_text(content)
+    raise LLMError("No JSON text found in chat completion output")
+
+
+def parse_json_text(text: str) -> dict:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return json.loads(text)
+
+
+def default_model_for_provider(provider: str) -> str:
+    if provider == "deepseek":
+        return "deepseek-v4-flash"
+    if provider == "openai":
+        return "gpt-4.1-mini"
+    return "dry-run"
+
+
+def build_llm_client(
+    provider: str = "openai",
+    cache_dir: Path | None = None,
+    base_url: str | None = None,
+) -> LLMClient:
     if provider == "dry-run":
         client: LLMClient = DryRunLLMClient()
     elif provider == "openai":
         client = OpenAIResponsesClient()
+    elif provider == "deepseek":
+        client = DeepSeekChatClient(base_url=base_url)
     else:
         raise LLMError(f"unsupported LLM provider: {provider}")
     if cache_dir:
         client = CachedLLMClient(client, cache_dir)
     return client
+
+
+def load_local_env(start_dir: Path | None = None) -> None:
+    """Load KEY=VALUE lines from the nearest local .env without overwriting process env."""
+    search_dirs = []
+    if start_dir:
+        search_dirs.extend([Path(start_dir), *Path(start_dir).parents])
+    search_dirs.extend([Path.cwd(), *Path.cwd().parents])
+    seen = set()
+    for directory in search_dirs:
+        env_path = directory / ".env"
+        if env_path in seen:
+            continue
+        seen.add(env_path)
+        if not env_path.exists():
+            continue
+        for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        return
 
 
 def first_json_field(text: str, field: str) -> str:

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agents.domain_synthesizer_agent import DomainSynthesizerAgent
+from agents.llm_client import default_model_for_provider
 from agents.paper_reader_agent import PaperReaderAgent
 from litsurveygrp.agent_input import AgentInputPreparer
 from litsurveygrp.enrichment.metadata_enrichment import (
@@ -166,7 +167,8 @@ class SurveyCommandConfig:
     min_value_score: float | None = None
     require_doi: bool = False
     agent_provider: str = "dry-run"
-    agent_model: str = "gpt-4.1-mini"
+    agent_model: str = ""
+    agent_base_url: str = ""
     agent_cache_dir: Path | None = None
     run_agents: bool = True
     extract_pdf_text: bool = True
@@ -191,6 +193,7 @@ class SurveyCommandConfig:
         self.keywords = list(self.keywords or [])
         self.article_types = list(self.article_types or [])
         self.reference_sources = list(self.reference_sources or [])
+        self.agent_model = self.agent_model or default_model_for_provider(self.agent_provider)
         if self.agent_cache_dir is not None:
             self.agent_cache_dir = Path(self.agent_cache_dir)
 
@@ -669,6 +672,7 @@ class SurveyCommandService:
                 provider=config.agent_provider,
                 model=config.agent_model,
                 cache_dir=config.agent_cache_dir,
+                base_url=config.agent_base_url,
                 monitor=RunMonitor(config.agent_dir),
             ).run()
             DomainSynthesizerAgent(
@@ -676,6 +680,7 @@ class SurveyCommandService:
                 provider=config.agent_provider,
                 model=config.agent_model,
                 cache_dir=config.agent_cache_dir,
+                base_url=config.agent_base_url,
                 monitor=RunMonitor(config.agent_dir),
             ).run()
 
@@ -723,7 +728,8 @@ def run_survey_from_args(args) -> int:
         min_value_score=getattr(args, "min_value_score", None),
         require_doi=getattr(args, "require_doi", False),
         agent_provider=getattr(args, "agent_provider", "dry-run"),
-        agent_model=getattr(args, "agent_model", "gpt-4.1-mini"),
+        agent_model=getattr(args, "agent_model", ""),
+        agent_base_url=getattr(args, "agent_base_url", ""),
         agent_cache_dir=Path(args.agent_cache_dir) if getattr(args, "agent_cache_dir", None) else None,
         run_agents=not getattr(args, "skip_agents", False),
         extract_pdf_text=not getattr(args, "no_extract_pdf_text", False),

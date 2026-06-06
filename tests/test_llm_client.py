@@ -2,7 +2,14 @@
 
 import json
 
-from agents.llm_client import DryRunLLMClient, first_json_field, parse_response_json
+from agents.llm_client import (
+    DeepSeekChatClient,
+    DryRunLLMClient,
+    default_model_for_provider,
+    first_json_field,
+    parse_chat_completion_json,
+    parse_response_json,
+)
 
 
 def test_first_json_field_finds_nested_values():
@@ -47,3 +54,23 @@ def test_parse_response_json_reads_responses_output_text():
     }
 
     assert parse_response_json(body) == {"ok": True}
+
+
+def test_parse_chat_completion_json_reads_message_content():
+    body = {
+        "choices": [
+            {"message": {"content": "```json\n{\"ok\": true}\n```"}}
+        ]
+    }
+
+    assert parse_chat_completion_json(body) == {"ok": True}
+
+
+def test_deepseek_client_uses_env_key_and_base_url(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://example.test/v1/")
+
+    client = DeepSeekChatClient()
+
+    assert client.api_url == "https://example.test/v1/chat/completions"
+    assert default_model_for_provider("deepseek") == "deepseek-v4-flash"

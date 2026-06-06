@@ -512,8 +512,9 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
         download_timeout = 9
         min_value_score = 0.4
         require_doi = True
-        agent_provider = "dry-run"
-        agent_model = "gpt-4.1-mini"
+        agent_provider = "deepseek"
+        agent_model = ""
+        agent_base_url = "https://api.deepseek.com"
         agent_cache_dir = str(tmp_path / "cache")
         skip_agents = True
         no_extract_pdf_text = True
@@ -547,6 +548,9 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
     assert config.keywords == ["AI"]
     assert config.metadata_sources == ["openalex"]
     assert config.top_papers == 12
+    assert config.agent_provider == "deepseek"
+    assert config.agent_model == "deepseek-v4-flash"
+    assert config.agent_base_url == "https://api.deepseek.com"
     assert config.agent_cache_dir.name == "cache"
     assert config.run_agents is False
     assert config.extract_pdf_text is False

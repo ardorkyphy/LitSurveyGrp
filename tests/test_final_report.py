@@ -117,6 +117,33 @@ def test_final_report_builder_writes_markdown_and_html(tmp_path):
     assert "<html" in html
 
 
+def test_final_report_skips_invalid_agent_outputs(tmp_path):
+    results, agent = make_report_inputs(tmp_path)
+    write_json(
+        agent / "domain_001" / "paper_analysis" / "paper_002.analysis.json",
+        {
+            "validation_status": "invalid",
+            "research_problem": "This failed result should not be included.",
+            "source_basis": "abstract_only",
+            "confidence": "low",
+        },
+    )
+    write_json(
+        agent / "domain_001" / "papers" / "paper_002.json",
+        {
+            "title": "Invalid paper",
+            "year": "2026",
+            "journal": "Journal",
+            "citation_count": 1,
+        },
+    )
+
+    data = FinalSurveyReportBuilder(results, agent_dir=agent).load_context()
+
+    assert len(data["domains"][0]["analyses"]) == 1
+    assert data["domains"][0]["analyses"][0]["paper"]["title"] == "Neural decoding paper"
+
+
 def test_final_report_cli_adapter(monkeypatch, tmp_path):
     results, agent = make_report_inputs(tmp_path)
     captured = {}

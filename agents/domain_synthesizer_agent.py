@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents.llm_client import LLMClient, build_llm_client
+from agents.llm_client import default_model_for_provider
 from agents.paper_reader_agent import domain_dirs, read_json, write_json
+from agents.validation import require_non_empty_strings, unknown_evidence_papers, validate_schema
 from litsurveygrp.run_monitor import RunMonitor
 
 
@@ -93,8 +95,9 @@ class DomainSynthesizerAgent:
 
     input_dir: Path
     provider: str = "dry-run"
-    model: str = "gpt-4.1-mini"
+    model: str = ""
     cache_dir: Path | None = None
+    base_url: str = ""
     overwrite: bool = False
     llm_client: LLMClient | None = None
     monitor: RunMonitor | None = None
@@ -102,17 +105,24 @@ class DomainSynthesizerAgent:
     def __post_init__(self) -> None:
         self.input_dir = Path(self.input_dir)
         self.cache_dir = Path(self.cache_dir) if self.cache_dir else None
+        self.model = self.model or default_model_for_provider(self.provider)
         if self.llm_client is None:
-            self.llm_client = build_llm_client(self.provider, self.cache_dir)
+            self.llm_client = build_llm_client(
+                self.provider,
+                self.cache_dir,
+                base_url=self.base_url or None,
+            )
 
     def run(self) -> dict:
         domains = domain_dirs(self.input_dir)
         self.start_monitor(total=len(domains))
         written = []
         skipped = []
+        failed = []
         try:
             for index, domain_dir in enumerate(domains, start=1):
                 out_path = domain_dir / "domain_synthesis.json"
+                error_path = domain_dir / "domain_synthesis.error.json"
                 report_path = domain_dir / "domain_report.md"
                 if out_path.exists() and report_path.exists() and not self.overwrite:
                     skipped.append(str(out_path))
@@ -135,17 +145,52 @@ class DomainSynthesizerAgent:
                         "skipped": len(skipped),
                     },
                 )
-                result = self.llm_client.complete_json(
-                    system=DOMAIN_SYSTEM_PROMPT,
-                    user=json.dumps(payload, ensure_ascii=False, indent=2),
-                    schema=DOMAIN_SYNTHESIS_SCHEMA,
-                    model=self.model,
-                    cache_key=f"domain:{domain_dir.name}",
-                )
-                result = normalize_domain_synthesis(result, payload["domain"]["domain_name"])
-                write_json(out_path, result)
-                report_path.write_text(render_domain_report(result), encoding="utf-8")
-                written.append(str(out_path))
+                try:
+                    result = self.llm_client.complete_json(
+                        system=DOMAIN_SYSTEM_PROMPT,
+                        user=json.dumps(payload, ensure_ascii=False, indent=2),
+                        schema=DOMAIN_SYNTHESIS_SCHEMA,
+                        model=self.model,
+                        cache_key=f"domain:{domain_dir.name}",
+                    )
+                    result = normalize_domain_synthesis(result, payload["domain"]["domain_name"])
+                    validation_errors = validate_domain_synthesis(result, payload)
+                    if validation_errors:
+                        write_json(
+                            error_path,
+                            {
+                                "domain_dir": str(domain_dir),
+                                "domain": payload["domain"]["domain_name"],
+                                "validation_status": "invalid",
+                                "validation_errors": validation_errors,
+                                "synthesis": result,
+                            },
+                        )
+                        if out_path.exists():
+                            out_path.unlink()
+                        if report_path.exists():
+                            report_path.unlink()
+                        failed.append(str(error_path))
+                        continue
+                    result["validation_status"] = "valid"
+                    result["validation_errors"] = []
+                    result["unknown_evidence_papers"] = []
+                    if error_path.exists():
+                        error_path.unlink()
+                    write_json(out_path, result)
+                    report_path.write_text(render_domain_report(result), encoding="utf-8")
+                    written.append(str(out_path))
+                except Exception as exc:
+                    write_json(
+                        error_path,
+                        {
+                            "domain_dir": str(domain_dir),
+                            "domain": payload["domain"]["domain_name"],
+                            "validation_status": "invalid",
+                            "validation_errors": [f"agent_failed: {exc}"],
+                        },
+                    )
+                    failed.append(str(error_path))
 
             summary = {
                 "input_dir": str(self.input_dir),
@@ -156,17 +201,19 @@ class DomainSynthesizerAgent:
                 "domain_count": len(domains),
                 "written_count": len(written),
                 "skipped_count": len(skipped),
+                "failed_count": len(failed),
                 "written": written,
                 "skipped": skipped,
+                "failed": failed,
             }
             write_json(self.input_dir / "domain_synthesizer_summary.json", summary)
             self.update_monitor(
-                processed=len(written) + len(skipped),
+                processed=len(written) + len(skipped) + len(failed),
                 total=len(domains),
                 current_item="",
-                metrics={"written": len(written), "skipped": len(skipped)},
+                metrics={"written": len(written), "skipped": len(skipped), "failed": len(failed)},
             )
-            self.finish_monitor("completed", f"Domain synthesizer wrote {len(written)} domains; skipped {len(skipped)}")
+            self.finish_monitor("completed", f"Domain synthesizer wrote {len(written)} domains; skipped {len(skipped)}; failed {len(failed)}")
             return summary
         except Exception as exc:
             self.finish_monitor("failed", f"Domain synthesizer failed: {exc}")
@@ -279,6 +326,23 @@ def normalize_domain_synthesis(result: dict, domain_name: str) -> dict:
     return normalized
 
 
+def validate_domain_synthesis(result: dict, payload: dict) -> list[str]:
+    errors = validate_schema(result, DOMAIN_SYNTHESIS_SCHEMA)
+    errors.extend(require_non_empty_strings(result, ["domain", "one_sentence_summary", "confidence"]))
+    known_titles = {
+        item.get("title", "")
+        for item in payload.get("paper_analyses") or []
+        if isinstance(item, dict)
+    }
+    unknown = unknown_evidence_papers(result, known_titles)
+    if unknown:
+        result["unknown_evidence_papers"] = unknown
+        errors.extend([f"$.evidence_index: unknown paper title {title!r}" for title in unknown])
+    else:
+        result["unknown_evidence_papers"] = []
+    return errors
+
+
 def render_domain_report(synthesis: dict) -> str:
     lines = [
         f"# {synthesis.get('domain') or 'Domain'}",
@@ -320,8 +384,9 @@ def render_domain_report(synthesis: dict) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Synthesize paper analyses into per-domain research maps.")
     parser.add_argument("--input-dir", required=True, help="agent input root produced by prepare-agent-input")
-    parser.add_argument("--provider", default="dry-run", choices=["dry-run", "openai"])
-    parser.add_argument("--model", default="gpt-4.1-mini")
+    parser.add_argument("--provider", default="dry-run", choices=["dry-run", "openai", "deepseek"])
+    parser.add_argument("--model", default="", help="LLM model; defaults by provider")
+    parser.add_argument("--base-url", default="", help="optional OpenAI-compatible base URL override")
     parser.add_argument("--cache-dir", help="directory for prompt/response cache")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--monitor-dir", help="directory for run_monitor.html and run_status.json; defaults to input-dir")
@@ -338,6 +403,7 @@ def run_from_args(args) -> int:
         provider=args.provider,
         model=args.model,
         cache_dir=Path(args.cache_dir) if getattr(args, "cache_dir", None) else None,
+        base_url=getattr(args, "base_url", ""),
         overwrite=getattr(args, "overwrite", False),
         monitor=monitor,
     )

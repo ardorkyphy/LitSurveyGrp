@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 
-import pytest
-
 from litsurveygrp.__main__ import build_parser
 
 
@@ -24,7 +22,11 @@ def test_cli_survey_arguments_are_core_workflow_focused():
         "--download-workers",
         "4",
         "--agent-provider",
-        "dry-run",
+        "deepseek",
+        "--agent-model",
+        "deepseek-v4-flash",
+        "--agent-base-url",
+        "https://api.deepseek.com",
         "--enrichment-workers",
         "4",
         "--classification-workers",
@@ -60,7 +62,9 @@ def test_cli_survey_arguments_are_core_workflow_focused():
     assert args.top_domains == 8
     assert args.per_domain == 20
     assert args.download_workers == 4
-    assert args.agent_provider == "dry-run"
+    assert args.agent_provider == "deepseek"
+    assert args.agent_model == "deepseek-v4-flash"
+    assert args.agent_base_url == "https://api.deepseek.com"
     assert args.enrichment_workers == 4
     assert args.classification_workers == 4
     assert args.domain_rules == "rules.json"
@@ -143,8 +147,104 @@ def test_cli_list_journals_arguments():
     assert args.group == "ccf-a-journal"
 
 
-def test_stage_commands_are_not_public_cli():
+def test_stage_commands_are_public_cli():
     parser = build_parser()
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(["download-pdfs", "--manifest", "manifest.json"])
+    download = parser.parse_args([
+        "download-pdfs",
+        "--manifest",
+        "classified.json",
+        "--papers-dir",
+        "papers",
+        "--results-dir",
+        "results",
+        "--top",
+        "12",
+        "--min-value-score",
+        "0.5",
+        "--download-workers",
+        "3",
+        "--require-doi",
+        "--include-existing",
+    ])
+    assert download.command == "download-pdfs"
+    assert download.manifest == "classified.json"
+    assert download.papers_dir == "papers"
+    assert download.results_dir == "results"
+    assert download.top == 12
+    assert download.min_value_score == 0.5
+    assert download.download_workers == 3
+    assert download.require_doi is True
+    assert download.include_existing is True
+
+    agent_input = parser.parse_args([
+        "prepare-agent-input",
+        "--manifest",
+        "pdf_manifest.json",
+        "--out-dir",
+        "agent_inputs",
+        "--top-domains",
+        "5",
+        "--per-domain",
+        "8",
+        "--copy-pdfs",
+        "--extract-pdf-text",
+        "--project-name",
+        "demo",
+    ])
+    assert agent_input.command == "prepare-agent-input"
+    assert agent_input.manifest == "pdf_manifest.json"
+    assert agent_input.out_dir == "agent_inputs"
+    assert agent_input.top_domains == 5
+    assert agent_input.per_domain == 8
+    assert agent_input.copy_pdfs is True
+    assert agent_input.extract_pdf_text is True
+    assert agent_input.project_name == "demo"
+
+    enrich = parser.parse_args([
+        "enrich-metadata",
+        "--manifest",
+        "article_manifest.json",
+        "--sources",
+        "openalex",
+        "crossref",
+        "--out",
+        "enriched.json",
+        "--workers",
+        "4",
+    ])
+    assert enrich.command == "enrich-metadata"
+    assert enrich.sources == ["openalex", "crossref"]
+    assert enrich.out == "enriched.json"
+    assert enrich.workers == 4
+
+    classify = parser.parse_args([
+        "classify-papers",
+        "--manifest",
+        "enriched.json",
+        "--out-dir",
+        "results",
+        "--organize-dir",
+        "papers",
+        "--domain-rules",
+        "rules.json",
+        "--classification-workers",
+        "2",
+    ])
+    assert classify.command == "classify-papers"
+    assert classify.out_dir == "results"
+    assert classify.organize_dir == "papers"
+    assert classify.domain_rules == "rules.json"
+    assert classify.classification_workers == 2
+
+    stats = parser.parse_args(["stats", "--manifest", "classified.json", "--out-dir", "stats", "--top", "10"])
+    assert stats.command == "stats"
+    assert stats.manifest == "classified.json"
+    assert stats.out_dir == "stats"
+    assert stats.top == 10
+
+    visualize = parser.parse_args(["visualize", "--manifest", "classified.json", "--out-dir", "viz", "--top", "9"])
+    assert visualize.command == "visualize"
+    assert visualize.manifest == "classified.json"
+    assert visualize.out_dir == "viz"
+    assert visualize.top == 9

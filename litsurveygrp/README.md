@@ -73,31 +73,29 @@ lsg list-journals
 Run a full Nature Aging survey:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out nature_aging `
   --journal nature-aging `
   --limit 50 `
-  --papers-dir papers `
-  --results-dir results `
+  --download-workers 4 `
   --analyze-references
 ```
 
 For larger surveys, prefer limiting discovered records with
-`--per-journal-limit` instead of asking for a large number of completed PDFs.
-This produces metadata, classification, statistics, and visualization faster
-without coupling the run to PDF availability:
+`--per-journal-limit`. This produces metadata, classification, statistics, and
+visualization faster:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out nature_aging_large `
   --journal nature-aging `
   --per-journal-limit 150 `
-  --papers-dir papers `
-  --results-dir results
+  --top-papers 0 `
+  --skip-agents
 ```
 
-PDF download is optional and slower. `run-survey` is metadata-first by default;
-`--metadata-only` is accepted mostly as an explicit reminder. Use
-`--download-pdfs` when you want the pipeline to try PDF acquisition during
-discovery, optionally with `--download-workers`.
+PDF download is optional and slower. The public `survey` command downloads only
+the top-ranked papers; use `--top-papers 0` to skip that stage.
 
 Download PDFs later by top research value:
 
@@ -117,14 +115,13 @@ main hyperparameter is `--top`; users can also add `--min-value-score`,
 `--require-doi`, or `--include-existing`.
 
 Repeat runs reuse cached OpenAlex pages from `results/metadata_cache` by
-default. Override the cache location with `--metadata-cache-dir`, or disable it
-with `--no-metadata-cache`.
+default.
 
 Prepare top papers for LLM research agents:
 
 ```powershell
 lsg prepare-agent-input `
-  --manifest results\classified_manifest.json `
+  --manifest results\pdf_downloaded_manifest.json `
   --out-dir agent_inputs\demo `
   --project-name demo `
   --top-domains 10 `
@@ -134,47 +131,43 @@ lsg prepare-agent-input `
 Run a keyword-based survey across journals:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out causal_discovery `
   --query "Large Language Model causal discovery" `
   --keyword "Large Language Model" `
   --keyword "causal discovery" `
   --limit 30 `
-  --papers-dir papers `
-  --results-dir results `
   --analyze-references
 ```
 
-Filter by year, article type, citation count, author, or institution:
+Filter by year, article type, or citation count:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out aging_filtered `
   --journal nature-aging `
   --from-year 2022 `
   --to-year 2026 `
   --article-type Article `
   --min-citations 10 `
-  --author "Smith" `
-  --institution "Harvard" `
-  --limit 50 `
-  --papers-dir papers `
-  --results-dir results
+  --limit 50
 ```
 
 Clean generated experiment outputs:
 
 ```powershell
-lsg clean-results --target papers --target results
+lsg clean --target papers --target results
 ```
 
 Run individual steps:
 
 ```powershell
-lsg enrich-metadata --manifest results\article_manifest.json
+lsg enrich-metadata --manifest results\article_manifest.json --out results\enriched_manifest.json
 lsg classify-papers --manifest results\enriched_manifest.json --out-dir results --organize-dir papers
 lsg stats --manifest results\classified_manifest.json --out-dir results\stats
 lsg visualize --manifest results\classified_manifest.json --out-dir results\visualization
 lsg download-pdfs --manifest results\classified_manifest.json --papers-dir papers --results-dir results --top 20
-lsg analyze-references --manifest results\classified_manifest.json --out-dir results\references
+lsg prepare-agent-input --manifest results\pdf_downloaded_manifest.json --out-dir agent_inputs\demo --top-domains 10 --per-domain 30
 ```
 
 ## Output Layout
@@ -335,12 +328,11 @@ lsg list-journals
 完整运行 Nature Aging 调研：
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out nature_aging `
   --journal nature-aging `
   --limit 50 `
   --download-workers 4 `
-  --papers-dir papers `
-  --results-dir results `
   --analyze-references
 ```
 
@@ -348,16 +340,17 @@ lsg run-survey `
 `--limit` 要求完成大量 PDF。这样可以更快得到元数据、分类、统计和图表：
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out nature_aging_large `
   --journal nature-aging `
   --per-journal-limit 150 `
-  --papers-dir papers `
-  --results-dir results
+  --top-papers 0 `
+  --skip-agents
 ```
 
-PDF 下载是可选项且速度较慢。`run-survey` 默认就是 metadata-first；
-`--metadata-only` 主要作为显式提示保留。需要 PDF 时再使用 `--download-pdfs`，
-也可以配合 `--download-workers` 并发下载。
+PDF 下载是可选项且速度较慢。`survey` 默认只尝试下载排名靠前的论文；
+使用 `--top-papers 0` 可以跳过这个阶段，也可以配合 `--download-workers`
+并发下载。
 
 也可以先完整跑完元数据、分类、统计和可视化，再按研究价值排序下载最值得看的 PDF：
 
@@ -375,20 +368,19 @@ lsg download-pdfs `
 按关键词跨期刊检索：
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out causal_discovery `
   --query "Large Language Model causal discovery" `
   --keyword "Large Language Model" `
   --keyword "causal discovery" `
   --limit 30 `
-  --papers-dir papers `
-  --results-dir results `
   --analyze-references
 ```
 
 清理历史实验输出：
 
 ```powershell
-lsg clean-results --target papers --target results
+lsg clean --target papers --target results
 ```
 
 ## 输出结果

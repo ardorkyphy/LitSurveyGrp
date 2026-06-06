@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents.llm_client import LLMClient, build_llm_client
+from agents.llm_client import default_model_for_provider
+from agents.validation import require_non_empty_strings, unsupported_supporting_text, validate_schema
 from litsurveygrp.run_monitor import RunMonitor
 
 
@@ -68,8 +70,9 @@ class PaperReaderAgent:
 
     input_dir: Path
     provider: str = "dry-run"
-    model: str = "gpt-4.1-mini"
+    model: str = ""
     cache_dir: Path | None = None
+    base_url: str = ""
     overwrite: bool = False
     llm_client: LLMClient | None = None
     monitor: RunMonitor | None = None
@@ -77,8 +80,13 @@ class PaperReaderAgent:
     def __post_init__(self) -> None:
         self.input_dir = Path(self.input_dir)
         self.cache_dir = Path(self.cache_dir) if self.cache_dir else None
+        self.model = self.model or default_model_for_provider(self.provider)
         if self.llm_client is None:
-            self.llm_client = build_llm_client(self.provider, self.cache_dir)
+            self.llm_client = build_llm_client(
+                self.provider,
+                self.cache_dir,
+                base_url=self.base_url or None,
+            )
 
     def run(self) -> dict:
         domains = domain_dirs(self.input_dir)
@@ -90,11 +98,13 @@ class PaperReaderAgent:
         self.start_monitor(total=len(paper_paths), domain_count=len(domains))
         written = []
         skipped = []
+        failed = []
         try:
             for index, (domain_dir, paper_path) in enumerate(paper_paths, start=1):
                 analysis_dir = domain_dir / "paper_analysis"
                 analysis_dir.mkdir(parents=True, exist_ok=True)
                 out_path = analysis_dir / f"{paper_path.stem}.analysis.json"
+                error_path = analysis_dir / f"{paper_path.stem}.analysis.error.json"
                 if out_path.exists() and not self.overwrite:
                     skipped.append(str(out_path))
                     self.update_monitor(
@@ -112,16 +122,47 @@ class PaperReaderAgent:
                     metrics={"domain": domain_dir.name, "written": len(written), "skipped": len(skipped)},
                 )
                 payload = self.build_payload(domain_dir, paper)
-                result = self.llm_client.complete_json(
-                    system=PAPER_SYSTEM_PROMPT,
-                    user=json.dumps(payload, ensure_ascii=False, indent=2),
-                    schema=PAPER_ANALYSIS_SCHEMA,
-                    model=self.model,
-                    cache_key=f"paper:{domain_dir.name}:{paper_path.stem}",
-                )
-                result = normalize_paper_analysis(result, payload["source_basis"])
-                write_json(out_path, result)
-                written.append(str(out_path))
+                try:
+                    result = self.llm_client.complete_json(
+                        system=PAPER_SYSTEM_PROMPT,
+                        user=json.dumps(payload, ensure_ascii=False, indent=2),
+                        schema=PAPER_ANALYSIS_SCHEMA,
+                        model=self.model,
+                        cache_key=f"paper:{domain_dir.name}:{paper_path.stem}",
+                    )
+                    result = normalize_paper_analysis(result, payload["source_basis"])
+                    validation_errors = validate_paper_analysis(result, payload, paper)
+                    if validation_errors:
+                        error_record = {
+                            "paper_path": str(paper_path),
+                            "title": paper.get("title", ""),
+                            "validation_status": "invalid",
+                            "validation_errors": validation_errors,
+                            "analysis": result,
+                        }
+                        write_json(error_path, error_record)
+                        if out_path.exists():
+                            out_path.unlink()
+                        failed.append(str(error_path))
+                        continue
+                    result["validation_status"] = "valid"
+                    result["validation_errors"] = []
+                    result["unsupported_supporting_text"] = []
+                    if error_path.exists():
+                        error_path.unlink()
+                    write_json(out_path, result)
+                    written.append(str(out_path))
+                except Exception as exc:
+                    write_json(
+                        error_path,
+                        {
+                            "paper_path": str(paper_path),
+                            "title": paper.get("title", ""),
+                            "validation_status": "invalid",
+                            "validation_errors": [f"agent_failed: {exc}"],
+                        },
+                    )
+                    failed.append(str(error_path))
             summary = {
                 "input_dir": str(self.input_dir),
                 "provider": self.provider,
@@ -131,17 +172,19 @@ class PaperReaderAgent:
                 "domain_count": len(domains),
                 "written_count": len(written),
                 "skipped_count": len(skipped),
+                "failed_count": len(failed),
                 "written": written,
                 "skipped": skipped,
+                "failed": failed,
             }
             write_json(self.input_dir / "paper_reader_summary.json", summary)
             self.update_monitor(
-                processed=len(written) + len(skipped),
+                processed=len(written) + len(skipped) + len(failed),
                 total=len(paper_paths),
                 current_item="",
-                metrics={"written": len(written), "skipped": len(skipped)},
+                metrics={"written": len(written), "skipped": len(skipped), "failed": len(failed)},
             )
-            self.finish_monitor("completed", f"Paper reader analyzed {len(written)} papers; skipped {len(skipped)}")
+            self.finish_monitor("completed", f"Paper reader analyzed {len(written)} papers; skipped {len(skipped)}; failed {len(failed)}")
             return summary
         except Exception as exc:
             self.finish_monitor("failed", f"Paper reader failed: {exc}")
@@ -276,6 +319,22 @@ def normalize_paper_analysis(result: dict, source_basis: str) -> dict:
     return normalized
 
 
+def validate_paper_analysis(result: dict, payload: dict, paper: dict) -> list[str]:
+    errors = validate_schema(result, PAPER_ANALYSIS_SCHEMA)
+    errors.extend(require_non_empty_strings(result, ["research_problem", "source_basis", "confidence"]))
+    basis_text = "\n".join([
+        str((paper or {}).get("abstract") or ""),
+        str(payload.get("extracted_text") or ""),
+    ])
+    unsupported = unsupported_supporting_text(result, basis_text)
+    if unsupported:
+        result["unsupported_supporting_text"] = unsupported
+        errors.extend([f"$.supporting_text: unsupported snippet {index + 1}" for index, _ in enumerate(unsupported)])
+    else:
+        result["unsupported_supporting_text"] = []
+    return errors
+
+
 def domain_dirs(input_dir: Path) -> list[Path]:
     input_dir = Path(input_dir)
     return [
@@ -301,8 +360,9 @@ def default_monitor_dir(input_dir: Path) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze packaged papers with a replaceable LLM client.")
     parser.add_argument("--input-dir", required=True, help="agent input root produced by prepare-agent-input")
-    parser.add_argument("--provider", default="dry-run", choices=["dry-run", "openai"])
-    parser.add_argument("--model", default="gpt-4.1-mini")
+    parser.add_argument("--provider", default="dry-run", choices=["dry-run", "openai", "deepseek"])
+    parser.add_argument("--model", default="", help="LLM model; defaults by provider")
+    parser.add_argument("--base-url", default="", help="optional OpenAI-compatible base URL override")
     parser.add_argument("--cache-dir", help="directory for prompt/response cache")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--monitor-dir", help="directory for run_monitor.html and run_status.json; defaults to input-dir")
@@ -319,6 +379,7 @@ def run_from_args(args) -> int:
         provider=args.provider,
         model=args.model,
         cache_dir=Path(args.cache_dir) if getattr(args, "cache_dir", None) else None,
+        base_url=getattr(args, "base_url", ""),
         overwrite=getattr(args, "overwrite", False),
         monitor=monitor,
     )

@@ -402,6 +402,22 @@ def test_multi_journal_service_builds_layered_source_by_default(tmp_path):
     assert isinstance(source, LayeredJournalProvider)
 
 
+def test_layered_source_passes_metadata_cache_to_openalex_provider(tmp_path):
+    service = MultiJournalDownloadService(
+        output_dir=tmp_path / "papers",
+        results_dir=tmp_path / "results",
+        journals=[SUPPORTED_JOURNALS["nature-aging"]],
+        per_journal_limit=3,
+    )
+
+    source = service.build_source(service.journals[0])
+    providers = source.build_providers()
+    openalex = next(provider for provider in providers if isinstance(provider, OpenAlexJournalProvider))
+
+    assert openalex.metadata_cache is not None
+    assert openalex.metadata_cache.cache_dir == tmp_path / "results" / "metadata_cache" / "openalex"
+
+
 def test_multi_journal_service_builds_nature_crawler_source(tmp_path):
     service = MultiJournalDownloadService(
         output_dir=tmp_path,

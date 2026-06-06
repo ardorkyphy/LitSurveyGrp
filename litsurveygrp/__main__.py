@@ -23,8 +23,9 @@ def build_parser():
     survey.add_argument("--download-timeout", type=int, default=15, help="network timeout in seconds")
     survey.add_argument("--min-value-score", type=float, help="minimum research value score required for PDF download")
     survey.add_argument("--require-doi", action="store_true", help="download only records with DOI")
-    survey.add_argument("--agent-provider", default="dry-run", choices=["dry-run", "openai"])
-    survey.add_argument("--agent-model", default="gpt-4.1-mini")
+    survey.add_argument("--agent-provider", default="dry-run", choices=["dry-run", "openai", "deepseek"])
+    survey.add_argument("--agent-model", default="", help="LLM model; defaults by provider")
+    survey.add_argument("--agent-base-url", default="", help="optional DeepSeek chat-completions base URL override")
     survey.add_argument("--agent-cache-dir", help="directory for prompt/response cache")
     survey.add_argument("--skip-agents", action="store_true", help="prepare agent inputs but skip LLM analysis")
     survey.add_argument("--no-extract-pdf-text", action="store_true", help="do not extract downloaded PDF text for agents")
@@ -51,6 +52,58 @@ def build_parser():
     report.add_argument("--max-domains", type=int, default=10)
     report.add_argument("--max-papers-per-domain", type=int, default=8)
     report.add_argument("--max-recommended-papers", type=int, default=12)
+
+    download_pdfs = subparsers.add_parser("download-pdfs", help="download top-ranked PDFs from an existing manifest")
+    download_pdfs.add_argument("--manifest", required=True)
+    download_pdfs.add_argument("--papers-dir", required=True)
+    download_pdfs.add_argument("--results-dir")
+    download_pdfs.add_argument("--top", type=int, default=20)
+    download_pdfs.add_argument("--min-value-score", type=float)
+    download_pdfs.add_argument("--download-workers", type=int, default=1)
+    download_pdfs.add_argument("--timeout", type=int, default=15)
+    download_pdfs.add_argument("--require-doi", action="store_true")
+    download_pdfs.add_argument("--include-existing", action="store_true")
+    download_pdfs.add_argument("--no-retry-oa-resolution", action="store_true")
+    download_pdfs.add_argument("--out-manifest-name", default="pdf_downloaded_manifest.json")
+
+    prepare_agent_input = subparsers.add_parser("prepare-agent-input", help="prepare per-domain inputs for research agents")
+    prepare_agent_input.add_argument("--manifest", required=True)
+    prepare_agent_input.add_argument("--out-dir", required=True)
+    prepare_agent_input.add_argument("--top-domains", type=int, default=10)
+    prepare_agent_input.add_argument("--per-domain", type=int, default=30)
+    prepare_agent_input.add_argument("--copy-pdfs", action="store_true")
+    prepare_agent_input.add_argument("--extract-pdf-text", action="store_true")
+    prepare_agent_input.add_argument("--max-text-chars", type=int, default=60000)
+    prepare_agent_input.add_argument("--project-name", default="")
+    prepare_agent_input.add_argument("--no-monitor", action="store_true")
+    prepare_agent_input.add_argument("--monitor-dir")
+
+    enrich_metadata = subparsers.add_parser("enrich-metadata", help="enrich an existing article manifest with scholarly metadata")
+    enrich_metadata.add_argument("--manifest", required=True)
+    enrich_metadata.add_argument("--sources", nargs="+", choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"])
+    enrich_metadata.add_argument("--out")
+    enrich_metadata.add_argument("--timeout", type=int, default=15)
+    enrich_metadata.add_argument("--request-interval", type=float, default=1.0)
+    enrich_metadata.add_argument("--workers", type=int, default=1)
+
+    classify_papers = subparsers.add_parser("classify-papers", help="classify papers into research topics")
+    classify_papers.add_argument("--manifest", required=True)
+    classify_papers.add_argument("--out-dir")
+    classify_papers.add_argument("--organize-dir")
+    classify_papers.add_argument("--move", action="store_true")
+    classify_papers.add_argument("--sentence-model")
+    classify_papers.add_argument("--domain-rules", default="")
+    classify_papers.add_argument("--classification-workers", type=int, default=1)
+
+    stats = subparsers.add_parser("stats", help="write research statistics from a classified manifest")
+    stats.add_argument("--manifest", required=True)
+    stats.add_argument("--out-dir")
+    stats.add_argument("--top", type=int, default=20)
+
+    visualize = subparsers.add_parser("visualize", help="write the offline research dashboard")
+    visualize.add_argument("--manifest", required=True)
+    visualize.add_argument("--out-dir")
+    visualize.add_argument("--top", type=int, default=15)
 
     monitor = subparsers.add_parser("monitor", help="open or watch the live run monitor")
     monitor.add_argument("--results-dir", default="results", help="directory containing run_monitor.html and run_status.json")
@@ -86,6 +139,24 @@ def main():
         return run_survey_from_args(args)
     if args.command == "report":
         from litsurveygrp.final_report import run_from_args
+        return run_from_args(args)
+    if args.command == "download-pdfs":
+        from litsurveygrp.pdf_download_stage import run_from_args
+        return run_from_args(args)
+    if args.command == "prepare-agent-input":
+        from litsurveygrp.agent_input import run_from_args
+        return run_from_args(args)
+    if args.command == "enrich-metadata":
+        from litsurveygrp.enrichment.metadata_enrichment import run_from_args
+        return run_from_args(args)
+    if args.command == "classify-papers":
+        from litsurveygrp.paper_classifier import run_from_args
+        return run_from_args(args)
+    if args.command == "stats":
+        from litsurveygrp.research_stats import run_from_args
+        return run_from_args(args)
+    if args.command == "visualize":
+        from litsurveygrp.visualization import run_from_args
         return run_from_args(args)
     if args.command == "monitor":
         from litsurveygrp.run_monitor import run_from_args

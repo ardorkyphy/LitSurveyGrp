@@ -70,11 +70,16 @@ class FinalSurveyReportBuilder:
                 continue
             manifest = self.read_json(domain_dir / "domain_manifest.json", {})
             synthesis = self.read_json(domain_dir / "domain_synthesis.json", {})
+            if synthesis and synthesis.get("validation_status", "valid") != "valid":
+                synthesis = {}
             analyses = []
             for path in sorted((domain_dir / "paper_analysis").glob("*.analysis.json")):
                 paper_path = domain_dir / "papers" / path.name.replace(".analysis.json", ".json")
                 paper = self.read_json(paper_path, {})
-                analyses.append({"paper": paper, "analysis": self.read_json(path, {})})
+                analysis = self.read_json(path, {})
+                if analysis.get("validation_status", "valid") != "valid":
+                    continue
+                analyses.append({"paper": paper, "analysis": analysis})
             domains.append({
                 "domain_dir": domain_dir,
                 "manifest": manifest,

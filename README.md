@@ -46,24 +46,25 @@ Optional API configuration can be provided through environment variables. Copy
 Minimal metadata-first run:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out aging_demo `
   --journal nature-aging `
   --per-journal-limit 10 `
-  --papers-dir papers `
-  --results-dir results
+  --top-papers 0 `
+  --skip-agents
 ```
 
-`run-survey` does not download PDFs by default. It writes metadata, topic
-classification, statistics, and visualization first.
+This writes metadata, topic classification, statistics, and visualization under
+`aging_demo`. Set `--top-papers 0` when you want to skip the top-PDF download
+stage.
 
 Run a Nature Aging survey:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out nature_aging `
   --journal nature-aging `
   --limit 50 `
-  --papers-dir papers `
-  --results-dir results `
   --analyze-references
 ```
 
@@ -71,65 +72,97 @@ For larger surveys, prefer limiting discovered records instead of requiring a
 large number of completed PDFs:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out nature_aging_large `
   --journal nature-aging `
   --per-journal-limit 150 `
-  --papers-dir papers `
-  --results-dir results
+  --skip-agents
 ```
 
-PDF download is optional and slower. Use `--download-pdfs` explicitly only when
-you want the discovery pipeline itself to try PDF acquisition. For larger
-surveys, prefer the staged `download-pdfs` command below.
+PDF download is optional and slower. The public `survey` command downloads only
+the top-ranked papers; use `--top-papers 0` to skip that stage.
 
-Download only the highest-value PDFs after a metadata-first run:
+Download only the highest-value PDFs during a survey run:
 
 ```powershell
-lsg download-pdfs `
-  --manifest results\classified_manifest.json `
-  --papers-dir papers `
-  --results-dir results `
-  --top 20 `
+lsg survey `
+  --out aging_top_pdfs `
+  --journal nature-aging `
+  --per-journal-limit 150 `
+  --top-papers 20 `
   --download-workers 4
 ```
 
-This command ranks papers by research value before downloading. The score uses
+The survey ranks papers by research value before downloading. The score uses
 citation count, journal tier, recency, review-entry value, classification
-confidence, and metadata completeness. Change `--top` to control how many PDFs
-to attempt. Optional controls include `--min-value-score`, `--require-doi`, and
-`--include-existing`.
+confidence, and metadata completeness. Change `--top-papers` to control how
+many PDFs to attempt. Optional controls include `--min-value-score` and
+`--require-doi`.
 
 Run a keyword-based survey:
 
 ```powershell
-lsg run-survey `
+lsg survey `
+  --out causal_discovery `
   --query "Large Language Model causal discovery" `
   --keyword "Large Language Model" `
   --keyword "causal discovery" `
-  --limit 30 `
-  --papers-dir papers `
-  --results-dir results
+  --limit 30
 ```
 
-Repeat runs reuse cached OpenAlex pages from `results/metadata_cache` by
-default. Override the cache location with `--metadata-cache-dir`, or disable it
-with `--no-metadata-cache`.
+Repeat runs reuse cached OpenAlex pages from the run's `results/metadata_cache`
+directory by default.
 
-Prepare the top papers for LLM research agents:
+Prepare the top papers for LLM research agents as part of the survey:
 
 ```powershell
-lsg prepare-agent-input `
-  --manifest results\classified_manifest.json `
-  --out-dir agent_inputs\demo `
-  --project-name demo `
+lsg survey `
+  --out agent_demo `
+  --query "Large Language Model causal discovery" `
+  --top-papers 20 `
   --top-domains 10 `
   --per-domain 30
 ```
 
+Run selected stages manually when you want tighter control over an existing
+manifest:
+
+```powershell
+lsg enrich-metadata --manifest results\article_manifest.json --out results\enriched_manifest.json
+lsg classify-papers --manifest results\enriched_manifest.json --out-dir results --organize-dir papers
+lsg stats --manifest results\classified_manifest.json --out-dir results\stats
+lsg visualize --manifest results\classified_manifest.json --out-dir results\visualization
+lsg download-pdfs --manifest results\classified_manifest.json --papers-dir papers --results-dir results --top 20
+lsg prepare-agent-input --manifest results\pdf_downloaded_manifest.json --out-dir agent_inputs\demo --top-domains 10 --per-domain 30
+```
+
+Run the full workflow with DeepSeek-backed agents:
+
+First configure `DEEPSEEK_API_KEY` in your local environment or `.env`.
+
+```powershell
+python -m litsurveygrp survey `
+  --out quantum_for_ai `
+  --query "Quantum for AI" `
+  --limit 1000 `
+  --top-domains 3 `
+  --per-domain 5 `
+  --agent-provider deepseek `
+  --agent-cache-dir quantum_for_ai\agent_cache
+```
+
+DeepSeek uses `DEEPSEEK_API_KEY` and defaults to `https://api.deepseek.com`
+with model `deepseek-v4-flash`. You can override the endpoint or model with
+`--agent-base-url` and `--agent-model`. The default provider remains
+`dry-run`, so LLM calls only happen when you explicitly select an API provider.
+Agent outputs are schema-validated before they become report inputs. Paper
+evidence snippets must be grounded in the supplied abstract or extracted text;
+invalid outputs are written as `*.error.json` and excluded from final reports.
+
 Clean generated experiment outputs:
 
 ```powershell
-lsg clean-results --target papers --target results
+lsg clean --target papers --target results
 ```
 
 ## Outputs
@@ -242,18 +275,18 @@ lsg --help
 python -m pip install -r requirements-dev.txt
 ```
 
-默认流程是 metadata-first：先快速生成候选论文元数据、权威 topic 分类、统计和可视化。
-需要 PDF 时再显式使用 `--download-pdfs`，并可配合 `--download-workers`
-并发下载可访问 PDF。
+默认流程先快速生成候选论文元数据、权威 topic 分类、统计和可视化。
+需要 PDF 时使用 `survey` 的 `--top-papers` 控制下载数量，并可配合
+`--download-workers` 并发下载可访问 PDF。
 
-推荐的大规模流程是：先只获取元数据并完成分类统计，再按研究价值下载 Top PDF：
+推荐的大规模流程是：限制候选元数据规模，再按研究价值下载 Top PDF：
 
 ```powershell
-lsg download-pdfs `
-  --manifest results\classified_manifest.json `
-  --papers-dir papers `
-  --results-dir results `
-  --top 20 `
+lsg survey `
+  --out large_survey `
+  --journal nature-aging `
+  --per-journal-limit 150 `
+  --top-papers 20 `
   --download-workers 4
 ```
 

@@ -53,6 +53,7 @@ results_*/
 papers_*/
 ai_in_neuroscience/
 quantum_for_ai/
+*_smoke/
 
 # Local model/cache data
 .cache/
