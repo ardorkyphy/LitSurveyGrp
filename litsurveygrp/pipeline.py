@@ -18,6 +18,7 @@ from litsurveygrp.enrichment.metadata_enrichment import (
 )
 from litsurveygrp.final_report import FinalSurveyReportBuilder
 from litsurveygrp.filters import ArticleFilter
+from litsurveygrp.analysis_paths import major_domain_name, report_data_dir
 from litsurveygrp.multi_journal_downloader import JournalConfig, MultiJournalDownloadService, parse_journal_specs
 from litsurveygrp.paper_classifier import PaperClassificationService
 from litsurveygrp.pdf_download_stage import TopPdfDownloadService
@@ -33,6 +34,7 @@ class SurveyPipelineConfig:
 
     papers_dir: Path
     results_dir: Path
+    reports_dir: Path | None = None
     journal_specs: list[str] | None = None
     query: str = ""
     year: int | None = None
@@ -82,6 +84,7 @@ class SurveyPipelineConfig:
     def __post_init__(self) -> None:
         self.papers_dir = Path(self.papers_dir)
         self.results_dir = Path(self.results_dir)
+        self.reports_dir = Path(self.reports_dir) if self.reports_dir else self.results_dir.parent / "reports"
         if self.reference_out_dir is not None:
             self.reference_out_dir = Path(self.reference_out_dir)
         if self.metadata_cache_dir is not None:
@@ -106,6 +109,14 @@ class SurveyPipelineConfig:
             institutions=self.institutions,
         )
 
+    @property
+    def major_domain(self) -> str:
+        return major_domain_name(self.query or ", ".join(self.journal_specs or []))
+
+    @property
+    def report_data_dir(self) -> Path:
+        return report_data_dir(self.reports_dir, self.major_domain)
+
 
 @dataclass
 class SurveyPipelineOutputs:
@@ -113,6 +124,7 @@ class SurveyPipelineOutputs:
 
     papers_dir: Path
     results_dir: Path
+    reports_dir: Path
     download_manifest: Path
     download_report: Path
     enriched_manifest: Path | None = None
@@ -130,6 +142,7 @@ class SurveyPipelineOutputs:
         return {
             "papers_dir": str(self.papers_dir),
             "results_dir": str(self.results_dir),
+            "reports_dir": str(self.reports_dir),
             "download_manifest": str(self.download_manifest),
             "download_report": str(self.download_report),
             "enriched_manifest": str(self.enriched_manifest or ""),
@@ -160,9 +173,10 @@ class SurveyCommandConfig:
     request_interval: float = DEFAULT_REQUEST_INTERVAL_SECONDS
     enrichment_workers: int = 1
     top_papers: int = 30
+    pdfs_per_domain: int = 0
     top_domains: int = 10
     per_domain: int = 30
-    download_workers: int = 4
+    download_workers: int = 8
     download_timeout: int = 15
     min_value_score: float | None = None
     require_doi: bool = False
@@ -170,9 +184,13 @@ class SurveyCommandConfig:
     agent_model: str = ""
     agent_base_url: str = ""
     agent_cache_dir: Path | None = None
+    agent_workers: int = 1
+    agent_input_mode: str = "evidence-chunks"
+    agent_max_chunks_per_paper: int = 12
+    agent_max_chunk_chars: int = 2200
     run_agents: bool = True
     extract_pdf_text: bool = True
-    max_text_chars: int = 60000
+    max_text_chars: int = 0
     report_title: str = ""
     domain_rules: str = ""
     classification_workers: int = 1
@@ -194,6 +212,12 @@ class SurveyCommandConfig:
         self.article_types = list(self.article_types or [])
         self.reference_sources = list(self.reference_sources or [])
         self.agent_model = self.agent_model or default_model_for_provider(self.agent_provider)
+        self.pdfs_per_domain = max(0, int(self.pdfs_per_domain or 0))
+        self.agent_workers = max(1, int(self.agent_workers or 1))
+        if self.agent_input_mode not in {"evidence-chunks", "full-text"}:
+            raise ValueError(f"unsupported agent input mode: {self.agent_input_mode}")
+        self.agent_max_chunks_per_paper = max(1, int(self.agent_max_chunks_per_paper or 1))
+        self.agent_max_chunk_chars = max(400, int(self.agent_max_chunk_chars or 2200))
         if self.agent_cache_dir is not None:
             self.agent_cache_dir = Path(self.agent_cache_dir)
 
@@ -206,8 +230,20 @@ class SurveyCommandConfig:
         return self.out_dir / "results"
 
     @property
+    def reports_dir(self) -> Path:
+        return self.out_dir / "reports"
+
+    @property
+    def major_domain(self) -> str:
+        return major_domain_name(self.query or ", ".join(self.journal_specs))
+
+    @property
+    def report_data_dir(self) -> Path:
+        return report_data_dir(self.reports_dir, self.major_domain)
+
+    @property
     def agent_dir(self) -> Path:
-        return self.out_dir / "agent_inputs"
+        return self.results_dir / self.major_domain
 
 
 @dataclass
@@ -220,6 +256,7 @@ class SurveyCommandOutputs:
     agent_dir: Path
     article_manifest: Path
     classified_manifest: Path
+    reports_dir: Path | None = None
     pdf_manifest: Path | None = None
     references_dir: Path | None = None
     markdown_report: Path | None = None
@@ -336,15 +373,16 @@ class SurveyPipelineService:
                 reference_sources=reference_sources,
                 top_n=top_n,
                 clean_existing=clean_existing,
-            )
+        )
         self.article_filter = self.config.build_article_filter()
-        self.monitor = RunMonitor(self.config.results_dir)
+        self.monitor = RunMonitor(self.report_overview_dir())
         self._sync_legacy_attributes()
 
     def _sync_legacy_attributes(self) -> None:
         """Expose historical attributes used by tests and external callers."""
         self.papers_dir = self.config.papers_dir
         self.results_dir = self.config.results_dir
+        self.reports_dir = self.config.reports_dir
         self.query = self.config.query
         self.journal_specs = self.config.journal_specs
         self.year = self.config.year
@@ -391,8 +429,10 @@ class SurveyPipelineService:
         if self.clean_existing:
             self._clean_generated_dir(self.papers_dir)
             self._clean_generated_dir(self.results_dir)
+            self._clean_generated_dir(self.reports_dir)
         self.papers_dir.mkdir(parents=True, exist_ok=True)
         self.results_dir.mkdir(parents=True, exist_ok=True)
+        self.report_overview_dir().mkdir(parents=True, exist_ok=True)
         self.monitor.start(
             "LitSurveyGrp survey pipeline",
             "Running literature survey workflow",
@@ -410,8 +450,9 @@ class SurveyPipelineService:
         outputs = SurveyPipelineOutputs(
             papers_dir=self.papers_dir,
             results_dir=self.results_dir,
-            download_manifest=self.results_dir / "article_manifest.json",
-            download_report=self.results_dir / "download_report.csv",
+            reports_dir=self.reports_dir,
+            download_manifest=self.report_overview_dir() / "article_manifest.json",
+            download_report=self.report_overview_dir() / "download_report.csv",
         )
         current_manifest = self._download(outputs)
         if self.enrich_metadata:
@@ -420,21 +461,23 @@ class SurveyPipelineService:
             current_manifest = self._classify(current_manifest, outputs)
         if self.write_stats:
             self.monitor.update("stats", "Writing research statistics", current_item=str(current_manifest))
-            outputs.stats_dir = self.results_dir / "stats"
+            outputs.stats_dir = self.report_overview_dir() / "stats"
             ResearchStatsWriter(current_manifest, out_dir=outputs.stats_dir, top_n=self.top_n).write()
         if self.write_visualization:
             self.monitor.update("visualize", "Writing offline research dashboard", current_item=str(current_manifest))
             outputs.dashboard = ResearchDashboardWriter(
                 current_manifest,
-                out_dir=self.results_dir / "visualization",
+                out_dir=self.report_overview_dir() / "visualization",
                 top_n=self.top_n,
             ).write()
         if self.analyze_references:
             self.monitor.update("references", "Analyzing cited references", current_item=str(current_manifest))
-            outputs.references_dir = self.reference_out_dir or self.results_dir / "references"
+            outputs.references_dir = self.reference_out_dir or self.report_overview_dir() / "references"
             ReferenceAnalysisService(
                 current_manifest,
                 out_dir=outputs.references_dir,
+                papers_dir=self.papers_dir,
+                project_name=self.query or ", ".join(self.journal_specs or []),
                 max_references_per_paper=self.max_references_per_paper,
                 max_total_references=self.max_total_references,
                 relevance_threshold=self.reference_relevance_threshold,
@@ -455,7 +498,7 @@ class SurveyPipelineService:
         self.monitor.update("download", "Collecting paper records", current_item=", ".join(self.journal_specs or []))
         service = MultiJournalDownloadService(
             output_dir=self.papers_dir,
-            results_dir=self.results_dir,
+            results_dir=outputs.download_manifest.parent,
             journals=self.build_journal_configs(),
             year=self.year,
             from_year=self.from_year,
@@ -489,7 +532,7 @@ class SurveyPipelineService:
         if not self.article_filter.needs_citation_count():
             return None
         return MetadataEnrichmentService(
-            self.results_dir / "article_prefilter.json",
+            self.report_overview_dir() / "article_prefilter.json",
             sources=self.filter_sources or ["openalex", "crossref"],
             timeout=self.metadata_timeout,
             request_interval=self.request_interval,
@@ -498,7 +541,7 @@ class SurveyPipelineService:
 
     def _enrich(self, manifest: Path, outputs: SurveyPipelineOutputs) -> Path:
         self.monitor.update("enrich", "Starting metadata enrichment", current_item=str(manifest))
-        outputs.enriched_manifest = self.results_dir / "enriched_manifest.json"
+        outputs.enriched_manifest = self.report_overview_dir() / "enriched_manifest.json"
         MetadataEnrichmentService(
             manifest,
             sources=self.metadata_sources or list(DEFAULT_SOURCES),
@@ -512,12 +555,12 @@ class SurveyPipelineService:
 
     def _classify(self, manifest: Path, outputs: SurveyPipelineOutputs) -> Path:
         self.monitor.update("classify", "Classifying papers into research topics", current_item=str(manifest))
-        outputs.classified_manifest = self.results_dir / "classified_manifest.json"
+        outputs.classified_manifest = self.report_overview_dir() / "classified_manifest.json"
         PaperClassificationService(
             manifest,
             copy_files=self.copy_files,
             clean=self.clean_classified,
-            output_dir=self.results_dir,
+            output_dir=self.report_overview_dir(),
             organize_dir=self.papers_dir,
             sentence_model=self.sentence_model,
             domain_rules=self.domain_rules,
@@ -526,7 +569,7 @@ class SurveyPipelineService:
         return outputs.classified_manifest
 
     def write_pipeline_report(self, outputs: SurveyPipelineOutputs) -> Path:
-        path = self.results_dir / "pipeline_report.json"
+        path = self.report_overview_dir() / "pipeline_report.json"
         report = outputs.to_dict()
         report["journals"] = list(self.journal_specs)
         report["query"] = self.query
@@ -576,9 +619,12 @@ class SurveyPipelineService:
             json.dump(report, handle, ensure_ascii=False, indent=2)
         return path
 
+    def report_overview_dir(self) -> Path:
+        return self.config.report_data_dir
+
     def effective_metadata_cache_dir(self) -> Path:
         env_dir = os.environ.get("LITSURVEYGRP_METADATA_CACHE_DIR", "").strip()
-        return self.metadata_cache_dir or (Path(env_dir) if env_dir else self.results_dir / "metadata_cache")
+        return self.metadata_cache_dir or (Path(env_dir) if env_dir else self.report_overview_dir() / "metadata_cache")
 
     def _clean_generated_dir(self, path: Path) -> None:
         path = Path(path)
@@ -596,105 +642,147 @@ class SurveyCommandService:
 
     def __init__(self, config: SurveyCommandConfig):
         self.config = config
+        self.monitor = RunMonitor(config.report_data_dir)
 
     def run(self) -> SurveyCommandOutputs:
         config = self.config
-        pipeline_outputs = SurveyPipelineService(
-            papers_dir=config.papers_dir,
-            results_dir=config.results_dir,
-            journal_specs=config.journal_specs or None,
-            query=config.query,
-            from_year=config.from_year,
-            to_year=config.to_year,
-            limit=config.limit,
-            per_journal_limit=config.per_journal_limit,
-            download_timeout=config.download_timeout,
-            download_workers=config.download_workers,
-            download_pdfs=False,
-            keywords=config.keywords,
-            article_types=config.article_types,
-            min_citations=config.min_citations,
-            metadata_sources=config.metadata_sources,
-            request_interval=config.request_interval,
-            enrichment_workers=config.enrichment_workers,
-            analyze_references=False,
-            top_n=config.top_papers,
-            clean_existing=config.clean_existing,
-            domain_rules=config.domain_rules,
-            classification_workers=config.classification_workers,
-        ).run()
-
-        pdf_outputs = TopPdfDownloadService(
-            manifest_path=pipeline_outputs.final_manifest,
-            papers_dir=config.papers_dir,
-            results_dir=config.results_dir,
-            top=config.top_papers,
-            min_value_score=config.min_value_score,
-            download_workers=config.download_workers,
-            timeout=config.download_timeout,
-            require_doi=config.require_doi,
-        ).run()
-        pdf_manifest = pdf_outputs["manifest"]
-
-        references_dir = None
-        if config.analyze_references:
-            references_dir = config.results_dir / "references"
-            ReferenceAnalysisService(
-                pdf_manifest,
-                out_dir=references_dir,
-                max_references_per_paper=config.max_references_per_paper,
-                max_total_references=config.max_total_references,
-                relevance_threshold=config.reference_relevance_threshold,
-                max_reference_downloads=config.max_reference_downloads,
-                min_value_score=config.min_reference_value_score,
-                require_doi_for_download=config.require_reference_doi,
-                reference_query=config.reference_query,
-                metadata_sources=config.reference_sources or None,
-                metadata_timeout=config.download_timeout,
+        self.monitor.start(
+            "LitSurveyGrp survey",
+            "Running full survey workflow",
+            metrics={
+                "query": config.query,
+                "papers_dir": str(config.papers_dir),
+                "results_dir": str(config.results_dir),
+                "reports_dir": str(config.reports_dir),
+                "download_workers": config.download_workers,
+                "agent_workers": config.agent_workers,
+            },
+        )
+        try:
+            pipeline_service = SurveyPipelineService(
+                papers_dir=config.papers_dir,
+                results_dir=config.results_dir,
+                journal_specs=config.journal_specs or None,
+                query=config.query,
+                from_year=config.from_year,
+                to_year=config.to_year,
+                limit=config.limit,
+                per_journal_limit=config.per_journal_limit,
+                download_timeout=config.download_timeout,
+                download_workers=config.download_workers,
+                download_pdfs=False,
+                keywords=config.keywords,
+                article_types=config.article_types,
+                min_citations=config.min_citations,
+                metadata_sources=config.metadata_sources,
                 request_interval=config.request_interval,
+                enrichment_workers=config.enrichment_workers,
+                analyze_references=False,
+                top_n=config.top_papers,
+                clean_existing=config.clean_existing,
+                domain_rules=config.domain_rules,
+                classification_workers=config.classification_workers,
+            )
+            pipeline_service.monitor = self.monitor.child("metadata_pipeline")
+            pipeline_outputs = pipeline_service.run()
+
+            pdf_outputs = TopPdfDownloadService(
+                manifest_path=pipeline_outputs.final_manifest,
+                papers_dir=config.papers_dir,
+                results_dir=config.report_data_dir,
+                top=config.top_domains if config.pdfs_per_domain > 0 else config.top_papers,
+                per_domain=config.pdfs_per_domain,
+                min_value_score=config.min_value_score,
+                download_workers=config.download_workers,
+                timeout=config.download_timeout,
+                require_doi=config.require_doi,
+                project_name=config.query or ", ".join(config.journal_specs),
+                monitor=self.monitor.child("pdf_download"),
+            ).run()
+            pdf_manifest = pdf_outputs["manifest"]
+
+            references_dir = None
+            if config.analyze_references:
+                references_dir = config.report_data_dir / "references"
+                self.monitor.update("references", "Analyzing cited references", current_item=str(pdf_manifest))
+                ReferenceAnalysisService(
+                    pdf_manifest,
+                    out_dir=references_dir,
+                    papers_dir=config.papers_dir,
+                    project_name=config.query or ", ".join(config.journal_specs),
+                    max_references_per_paper=config.max_references_per_paper,
+                    max_total_references=config.max_total_references,
+                    relevance_threshold=config.reference_relevance_threshold,
+                    max_reference_downloads=config.max_reference_downloads,
+                    min_value_score=config.min_reference_value_score,
+                    require_doi_for_download=config.require_reference_doi,
+                    reference_query=config.reference_query,
+                    metadata_sources=config.reference_sources or None,
+                    metadata_timeout=config.download_timeout,
+                    request_interval=config.request_interval,
+                ).run()
+
+            AgentInputPreparer(
+                manifest_path=pdf_manifest,
+                out_dir=config.agent_dir,
+                papers_dir=config.papers_dir,
+                results_dir=config.results_dir,
+                reports_dir=config.reports_dir,
+                top_domains=config.top_domains,
+                per_domain=config.per_domain,
+                selection="top-downloaded-pdfs",
+                top_papers=config.top_papers if config.pdfs_per_domain <= 0 else max(config.top_papers, config.pdfs_per_domain * max(config.top_domains, 1)),
+                copy_pdfs=True,
+                extract_pdf_text=config.extract_pdf_text,
+                max_text_chars=config.max_text_chars,
+                project_name=config.query or ", ".join(config.journal_specs),
+                monitor=self.monitor.child("agent_input"),
             ).run()
 
-        AgentInputPreparer(
-            manifest_path=pdf_manifest,
-            out_dir=config.agent_dir,
-            top_domains=config.top_domains,
-            per_domain=config.per_domain,
-            copy_pdfs=True,
-            extract_pdf_text=config.extract_pdf_text,
-            max_text_chars=config.max_text_chars,
-            project_name=config.query or ", ".join(config.journal_specs),
-            monitor=RunMonitor(config.agent_dir),
-        ).run()
+            if config.run_agents:
+                PaperReaderAgent(
+                    input_dir=config.agent_dir,
+                    results_dir=config.results_dir,
+                    reports_dir=config.reports_dir,
+                    provider=config.agent_provider,
+                    model=config.agent_model,
+                    cache_dir=config.agent_cache_dir,
+                    base_url=config.agent_base_url,
+                    workers=config.agent_workers,
+                    input_mode=config.agent_input_mode,
+                    max_chunks_per_paper=config.agent_max_chunks_per_paper,
+                    max_chunk_chars=config.agent_max_chunk_chars,
+                    monitor=self.monitor.child("paper_reader_agent"),
+                ).run()
+                DomainSynthesizerAgent(
+                    input_dir=config.agent_dir,
+                    results_dir=config.results_dir,
+                    reports_dir=config.reports_dir,
+                    provider=config.agent_provider,
+                    model=config.agent_model,
+                    cache_dir=config.agent_cache_dir,
+                    base_url=config.agent_base_url,
+                    monitor=self.monitor.child("domain_synthesizer_agent"),
+                ).run()
 
-        if config.run_agents:
-            PaperReaderAgent(
-                input_dir=config.agent_dir,
-                provider=config.agent_provider,
-                model=config.agent_model,
-                cache_dir=config.agent_cache_dir,
-                base_url=config.agent_base_url,
-                monitor=RunMonitor(config.agent_dir),
-            ).run()
-            DomainSynthesizerAgent(
-                input_dir=config.agent_dir,
-                provider=config.agent_provider,
-                model=config.agent_model,
-                cache_dir=config.agent_cache_dir,
-                base_url=config.agent_base_url,
-                monitor=RunMonitor(config.agent_dir),
-            ).run()
-
-        report_outputs = FinalSurveyReportBuilder(
-            results_dir=config.results_dir,
-            agent_dir=config.agent_dir,
-            title=config.report_title,
-        ).build()
+            self.monitor.update("final_report", "Building final survey report")
+            report_outputs = FinalSurveyReportBuilder(
+                results_dir=config.results_dir,
+                agent_dir=config.agent_dir,
+                reports_dir=config.reports_dir,
+                title=config.report_title,
+            ).build()
+            self.monitor.finish("completed", f"Survey completed: {report_outputs['html']}")
+        except Exception as exc:
+            self.monitor.finish("failed", f"Survey failed: {exc}")
+            raise
 
         return SurveyCommandOutputs(
             out_dir=config.out_dir,
             papers_dir=config.papers_dir,
             results_dir=config.results_dir,
             agent_dir=config.agent_dir,
+            reports_dir=config.reports_dir,
             article_manifest=pipeline_outputs.download_manifest,
             classified_manifest=pipeline_outputs.final_manifest,
             pdf_manifest=pdf_manifest,
@@ -704,8 +792,68 @@ class SurveyCommandService:
         )
 
 
+SURVEY_PRESETS = {
+    "fast": {
+        "top_papers": 10,
+        "pdfs_per_domain": 0,
+        "top_domains": 5,
+        "per_domain": 10,
+        "download_workers": 8,
+        "agent_workers": 1,
+        "agent_input_mode": "evidence-chunks",
+        "agent_max_chunks_per_paper": 8,
+        "agent_max_chunk_chars": 1800,
+    },
+    "balanced": {
+        "top_papers": 30,
+        "pdfs_per_domain": 0,
+        "top_domains": 10,
+        "per_domain": 30,
+        "download_workers": 8,
+        "agent_workers": 1,
+        "agent_input_mode": "evidence-chunks",
+        "agent_max_chunks_per_paper": 12,
+        "agent_max_chunk_chars": 2200,
+    },
+    "full": {
+        "top_papers": 30,
+        "pdfs_per_domain": 30,
+        "top_domains": 10,
+        "per_domain": 30,
+        "download_workers": 8,
+        "agent_workers": 2,
+        "agent_input_mode": "evidence-chunks",
+        "agent_max_chunks_per_paper": 14,
+        "agent_max_chunk_chars": 2400,
+    },
+    "metadata": {
+        "top_papers": 0,
+        "pdfs_per_domain": 0,
+        "top_domains": 10,
+        "per_domain": 30,
+        "download_workers": 8,
+        "agent_workers": 1,
+        "agent_input_mode": "evidence-chunks",
+        "agent_max_chunks_per_paper": 12,
+        "agent_max_chunk_chars": 2200,
+    },
+}
+
+
+def survey_arg(args, name: str, default=None):
+    value = getattr(args, name, None)
+    return default if value is None else value
+
+
 def run_survey_from_args(args) -> int:
     """CLI adapter for the simplified lsg survey command."""
+    preset = dict(SURVEY_PRESETS.get(getattr(args, "preset", "balanced"), SURVEY_PRESETS["balanced"]))
+    shared_workers = getattr(args, "workers", None)
+    pdfs = getattr(args, "pdfs", None)
+    domains = getattr(args, "domains", None)
+    papers_per_domain = getattr(args, "papers_per_domain", None)
+    model_provider = getattr(args, "model_provider", None)
+    model = getattr(args, "model", None)
     config = SurveyCommandConfig(
         out_dir=Path(args.out),
         journal_specs=getattr(args, "journal", None),
@@ -718,25 +866,30 @@ def run_survey_from_args(args) -> int:
         article_types=getattr(args, "article_type", None) or [],
         min_citations=getattr(args, "min_citations", None),
         metadata_sources=getattr(args, "sources", None),
-        request_interval=getattr(args, "request_interval", DEFAULT_REQUEST_INTERVAL_SECONDS),
-        enrichment_workers=getattr(args, "enrichment_workers", 1),
-        top_papers=getattr(args, "top_papers", 30),
-        top_domains=getattr(args, "top_domains", 10),
-        per_domain=getattr(args, "per_domain", 30),
-        download_workers=getattr(args, "download_workers", 4),
+        request_interval=survey_arg(args, "request_interval", DEFAULT_REQUEST_INTERVAL_SECONDS),
+        enrichment_workers=survey_arg(args, "enrichment_workers", 1),
+        top_papers=survey_arg(args, "top_papers", 0 if pdfs == 0 else preset["top_papers"]),
+        pdfs_per_domain=survey_arg(args, "pdfs_per_domain", pdfs if pdfs is not None else preset["pdfs_per_domain"]),
+        top_domains=survey_arg(args, "top_domains", domains if domains is not None else preset["top_domains"]),
+        per_domain=survey_arg(args, "per_domain", papers_per_domain if papers_per_domain is not None else preset["per_domain"]),
+        download_workers=survey_arg(args, "download_workers", shared_workers if shared_workers is not None else preset["download_workers"]),
         download_timeout=getattr(args, "download_timeout", 15),
         min_value_score=getattr(args, "min_value_score", None),
         require_doi=getattr(args, "require_doi", False),
-        agent_provider=getattr(args, "agent_provider", "dry-run"),
-        agent_model=getattr(args, "agent_model", ""),
+        agent_provider=survey_arg(args, "agent_provider", model_provider or "dry-run"),
+        agent_model=survey_arg(args, "agent_model", model or ""),
         agent_base_url=getattr(args, "agent_base_url", ""),
         agent_cache_dir=Path(args.agent_cache_dir) if getattr(args, "agent_cache_dir", None) else None,
+        agent_workers=survey_arg(args, "agent_workers", shared_workers if shared_workers is not None else preset["agent_workers"]),
+        agent_input_mode=survey_arg(args, "agent_input_mode", preset["agent_input_mode"]),
+        agent_max_chunks_per_paper=survey_arg(args, "agent_max_chunks_per_paper", preset["agent_max_chunks_per_paper"]),
+        agent_max_chunk_chars=survey_arg(args, "agent_max_chunk_chars", preset["agent_max_chunk_chars"]),
         run_agents=not getattr(args, "skip_agents", False),
         extract_pdf_text=not getattr(args, "no_extract_pdf_text", False),
-        max_text_chars=getattr(args, "max_text_chars", 60000),
+        max_text_chars=getattr(args, "max_text_chars", 0),
         report_title=getattr(args, "title", ""),
         domain_rules=getattr(args, "domain_rules", ""),
-        classification_workers=getattr(args, "classification_workers", 1),
+        classification_workers=survey_arg(args, "classification_workers", 1),
         analyze_references=getattr(args, "analyze_references", False),
         max_references_per_paper=getattr(args, "max_references_per_paper", 50),
         max_total_references=getattr(args, "max_total_references", 1000),

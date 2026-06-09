@@ -8,6 +8,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from agents.domain_synthesizer_agent import domain_evidence_coverage
+from litsurveygrp.analysis_paths import AnalysisLayout, major_domain_name, report_data_dir, subdomain_name
+
 
 @dataclass
 class FinalSurveyReportBuilder:
@@ -15,6 +18,7 @@ class FinalSurveyReportBuilder:
 
     results_dir: Path
     agent_dir: Path | None = None
+    reports_dir: Path | None = None
     out: Path | None = None
     html_out: Path | None = None
     title: str = ""
@@ -25,28 +29,34 @@ class FinalSurveyReportBuilder:
     def __post_init__(self) -> None:
         self.results_dir = Path(self.results_dir)
         self.agent_dir = Path(self.agent_dir) if self.agent_dir else None
-        self.out = Path(self.out) if self.out else self.results_dir / "final_survey_report.md"
-        self.html_out = Path(self.html_out) if self.html_out else self.results_dir / "final_survey_report.html"
+        self.reports_dir = Path(self.reports_dir) if self.reports_dir else self.results_dir.parent / "reports"
+        self.out = Path(self.out) if self.out else None
+        self.html_out = Path(self.html_out) if self.html_out else None
 
     def build(self) -> dict[str, Path]:
         data = self.load_context()
+        self.ensure_output_paths(data)
         markdown = self.render_markdown(data)
         self.write_text(self.out, markdown)
         self.write_text(self.html_out, markdown_to_html(markdown, title=data["title"]))
         return {"markdown": self.out, "html": self.html_out}
 
     def load_context(self) -> dict:
-        pipeline = self.read_json(self.results_dir / "pipeline_report.json", {})
-        summary = self.read_json(self.results_dir / "stats" / "summary.json", {})
-        profile = self.read_json(self.results_dir / "stats" / "research_profile.json", {})
-        pdf_summary = self.read_json(self.results_dir / "pdf_download_summary.json", {})
+        overview_dir = self.report_overview_dir()
+        pipeline = self.read_json(overview_dir / "pipeline_report.json", {}) or self.read_json(self.results_dir / "pipeline_report.json", {})
+        summary = self.read_json(overview_dir / "stats" / "summary.json", {}) or self.read_json(self.results_dir / "stats" / "summary.json", {})
+        profile = self.read_json(overview_dir / "stats" / "research_profile.json", {}) or self.read_json(self.results_dir / "stats" / "research_profile.json", {})
+        pdf_summary = self.read_json(overview_dir / "pdf_download_summary.json", {}) or self.read_json(self.results_dir / "pdf_download_summary.json", {})
         agent_summary = self.read_json(self.agent_dir / "agent_input_summary.json", {}) if self.agent_dir else {}
-        paper_reader_summary = self.read_json(self.agent_dir / "paper_reader_summary.json", {}) if self.agent_dir else {}
-        domain_synth_summary = self.read_json(self.agent_dir / "domain_synthesizer_summary.json", {}) if self.agent_dir else {}
+        paper_reader_summary = self.first_analysis_summary("paper_reader_summary.json")
+        domain_synth_summary = self.first_analysis_summary("domain_synthesizer_summary.json")
+        if self.agent_dir:
+            paper_reader_summary = paper_reader_summary or self.read_json(self.agent_dir / "paper_reader_summary.json", {})
+            domain_synth_summary = domain_synth_summary or self.read_json(self.agent_dir / "domain_synthesizer_summary.json", {})
         domains = self.load_domain_reports()
         manifest = self.read_json(Path(pipeline.get("final_manifest", "")), [])
         if not manifest:
-            manifest = self.read_json(self.results_dir / "classified_manifest.json", [])
+            manifest = self.read_json(overview_dir / "classified_manifest.json", {}) or self.read_json(self.results_dir / "classified_manifest.json", [])
         title = self.title or inferred_title(pipeline, agent_summary)
         return {
             "title": title,
@@ -61,19 +71,57 @@ class FinalSurveyReportBuilder:
             "manifest": manifest if isinstance(manifest, list) else [],
         }
 
+    def ensure_output_paths(self, data: dict) -> None:
+        report_dir = self.default_report_dir(data)
+        if self.out is None:
+            self.out = report_dir / "final_survey_report.md"
+        if self.html_out is None:
+            self.html_out = report_dir / "final_survey_report.html"
+
+    def default_report_dir(self, data: dict) -> Path:
+        agent_summary = data.get("agent_summary") or {}
+        domains = data.get("domains") or []
+        packages = agent_summary.get("packages") or []
+
+        if len(packages) == 1:
+            package = packages[0]
+            report_path = package.get("report_path")
+            if report_path:
+                return Path(report_path)
+
+        if len(domains) == 1:
+            manifest = domains[0].get("manifest") or {}
+            return self.layout_for_domain(domains[0]["domain_dir"], manifest).report_domain_dir
+
+        major_domain = agent_summary.get("major_domain") or major_domain_name(
+            agent_summary.get("project_name") or data.get("title") or "survey"
+        )
+        return report_data_dir(self.reports_dir, major_domain)
+
     def load_domain_reports(self) -> list[dict]:
         if not self.agent_dir or not self.agent_dir.exists():
             return []
         domains = []
-        for domain_dir in sorted(self.agent_dir.glob("domain_*")):
+        for domain_dir in self.domain_input_dirs():
             if not domain_dir.is_dir():
                 continue
             manifest = self.read_json(domain_dir / "domain_manifest.json", {})
-            synthesis = self.read_json(domain_dir / "domain_synthesis.json", {})
+            layout = self.layout_for_domain(domain_dir, manifest)
+            analysis_dir = layout.analysis_domain_dir
+            synthesis = self.read_json(analysis_dir / "domain_synthesis.json", {})
+            if not synthesis:
+                synthesis = self.read_json(self.legacy_analysis_dir_for_domain(domain_dir, manifest) / "domain_synthesis.json", {})
+            if not synthesis:
+                synthesis = self.read_json(domain_dir / "domain_synthesis.json", {})
             if synthesis and synthesis.get("validation_status", "valid") != "valid":
                 synthesis = {}
             analyses = []
-            for path in sorted((domain_dir / "paper_analysis").glob("*.analysis.json")):
+            paper_analysis_dir = self.first_existing_dir(
+                analysis_dir,
+                self.legacy_analysis_dir_for_domain(domain_dir, manifest),
+                domain_dir / "paper_analysis",
+            )
+            for path in sorted(paper_analysis_dir.glob("*.analysis.json")):
                 paper_path = domain_dir / "papers" / path.name.replace(".analysis.json", ".json")
                 paper = self.read_json(paper_path, {})
                 analysis = self.read_json(path, {})
@@ -85,8 +133,65 @@ class FinalSurveyReportBuilder:
                 "manifest": manifest,
                 "synthesis": synthesis,
                 "analyses": analyses,
+                "coverage": synthesis.get("domain_evidence_coverage") or domain_evidence_coverage(manifest, analyses),
             })
         return domains
+
+    def domain_input_dirs(self) -> list[Path]:
+        legacy = [
+            path
+            for path in sorted(self.agent_dir.glob("domain_*"))
+            if path.is_dir() and (path / "domain_manifest.json").exists()
+        ]
+        nested = [
+            path.parent
+            for path in sorted(self.agent_dir.rglob("domain_manifest.json"))
+            if (path.parent / "papers").exists()
+        ]
+        seen = set()
+        domains = []
+        for path in [*legacy, *nested]:
+            key = path.resolve()
+            if key not in seen:
+                seen.add(key)
+                domains.append(path)
+        return domains
+
+    def first_analysis_summary(self, filename: str) -> dict:
+        roots = [self.results_dir, self.results_dir / "analysis"]
+        seen = set()
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob(filename)):
+                key = path.resolve()
+                if key in seen:
+                    continue
+                seen.add(key)
+                data = self.read_json(path, {})
+                if data:
+                    return data
+        return {}
+
+    def layout_for_domain(self, domain_dir: Path, manifest: dict) -> AnalysisLayout:
+        return AnalysisLayout(
+            papers_dir=self.results_dir.parent / "papers",
+            results_dir=self.results_dir,
+            reports_dir=self.reports_dir,
+            major_domain=manifest.get("major_domain") or major_domain_name(manifest.get("domain_name", "")),
+            subdomain=manifest.get("subdomain_dir") or subdomain_name(manifest.get("domain_name", ""), domain_dir.name),
+        )
+
+    def legacy_analysis_dir_for_domain(self, domain_dir: Path, manifest: dict) -> Path:
+        major_domain = manifest.get("major_domain") or major_domain_name(manifest.get("domain_name", ""))
+        subdomain = manifest.get("subdomain_dir") or subdomain_name(manifest.get("domain_name", ""), domain_dir.name)
+        return self.results_dir / major_domain / subdomain
+
+    def first_existing_dir(self, *paths: Path) -> Path:
+        for path in paths:
+            if path.exists():
+                return path
+        return paths[0]
 
     def render_markdown(self, data: dict) -> str:
         lines = []
@@ -131,6 +236,8 @@ class FinalSurveyReportBuilder:
                 f"{pdf_summary.get('selected_for_download', 0)} selected Top papers"
             )
         add(f"- Agent analysis provider: {data['paper_reader_summary'].get('provider') or 'not available'}")
+        if data["paper_reader_summary"].get("input_mode"):
+            add(f"- Agent evidence mode: {data['paper_reader_summary'].get('input_mode')}")
         add(f"- Domain synthesis provider: {data['domain_synth_summary'].get('provider') or 'not available'}")
         if uses_dry_run(data):
             add("- Important note: the agent outputs were produced with `dry-run`; they are structural placeholders, not semantic LLM-authored analysis.")
@@ -159,6 +266,25 @@ class FinalSurveyReportBuilder:
         add("Leading institutions by citation volume include:")
         add("")
         add(bullets(format_count_rows(summary.get("top_institutions_by_citations") or [], "institution", limit=8)))
+        add("")
+
+        add("### 3.3 Domain Evidence Coverage")
+        add("")
+        add(markdown_table(
+            ["Domain", "Selected", "PDF Text", "Abstract Only", "Metadata Only", "Evidence Chunks", "Reliability"],
+            [
+                [
+                    (domain.get("manifest") or {}).get("domain_name") or (domain.get("synthesis") or {}).get("domain", ""),
+                    (domain.get("coverage") or {}).get("selected_papers", 0),
+                    (domain.get("coverage") or {}).get("papers_analyzed_from_pdf_text", 0),
+                    (domain.get("coverage") or {}).get("papers_analyzed_from_abstract_only", 0),
+                    (domain.get("coverage") or {}).get("papers_analyzed_from_metadata_only", 0),
+                    (domain.get("coverage") or {}).get("papers_with_selected_evidence_chunks", 0),
+                    (domain.get("coverage") or {}).get("reliability", "low"),
+                ]
+                for domain in domains
+            ],
+        ))
         add("")
 
         add("## 4. Domain-Level Findings")
@@ -201,10 +327,12 @@ class FinalSurveyReportBuilder:
 
         add("## Output Files")
         add("")
-        add(f"- Dashboard: `{relative_or_str(self.results_dir / 'visualization' / 'research_dashboard.html')}`")
-        add(f"- Classified manifest: `{relative_or_str(self.results_dir / 'classified_manifest.json')}`")
+        add(f"- Dashboard: `{relative_or_str(self.report_overview_dir() / 'visualization' / 'research_dashboard.html')}`")
+        add(f"- Classified manifest: `{relative_or_str(self.report_overview_dir() / 'classified_manifest.json')}`")
         if self.agent_dir:
-            add(f"- Agent input directory: `{relative_or_str(self.agent_dir)}`")
+            add(f"- Agent metadata directory: `{relative_or_str(self.agent_dir)}`")
+        add(f"- Agent result directory: `{relative_or_str(self.results_dir)}`")
+        add(f"- Domain report directory: `{relative_or_str(self.reports_dir)}`")
         add(f"- Markdown report: `{relative_or_str(self.out)}`")
         add(f"- HTML report: `{relative_or_str(self.html_out)}`")
         add("")
@@ -223,6 +351,20 @@ class FinalSurveyReportBuilder:
             f"The taxonomy source is `{manifest.get('taxonomy_source', 'unknown')}`."
         )
         lines.append("")
+        coverage = domain.get("coverage") or {}
+        if coverage:
+            lines.append(
+                "Evidence coverage: "
+                f"{coverage.get('papers_analyzed_from_pdf_text', 0)} full-text PDF analyses, "
+                f"{coverage.get('papers_analyzed_from_abstract_only', 0)} abstract-only analyses, "
+                f"{coverage.get('papers_analyzed_from_metadata_only', 0)} metadata-only analyses; "
+                f"reliability is `{coverage.get('reliability', 'low')}`."
+            )
+            note = coverage.get("reliability_note")
+            if note:
+                lines.append("")
+                lines.append(f"Reliability note: {note}")
+            lines.append("")
         if synthesis and not is_empty_synthesis(synthesis):
             lines.append(f"**Synthesis.** {synthesis.get('one_sentence_summary', '').strip()}")
             lines.append("")
@@ -251,6 +393,15 @@ class FinalSurveyReportBuilder:
             ])
         lines.append(markdown_table(["Title", "Year", "Journal", "Citations", "Basis"], rows))
         lines.append("")
+        evidence_rows = self.evidence_trace_rows(synthesis, analyses)
+        if evidence_rows:
+            lines.append("Evidence trace:")
+            lines.append("")
+            lines.append(markdown_table(
+                ["Claim", "Paper", "Evidence", "Section", "Supporting text"],
+                evidence_rows,
+            ))
+            lines.append("")
 
     def add_list_section(self, lines: list[str], title: str, values: list) -> None:
         if not values:
@@ -259,6 +410,62 @@ class FinalSurveyReportBuilder:
         lines.append("")
         lines.append(bullets([str(value) for value in values[:8]]))
         lines.append("")
+
+    def evidence_trace_rows(self, synthesis: dict, analyses: list[dict]) -> list[list[str]]:
+        if not analyses:
+            return []
+        by_reference = {}
+        for item in analyses:
+            paper = item.get("paper") or {}
+            paper_id = paper.get("paper_id") or ""
+            title = paper.get("title") or ""
+            for key in [paper_id, title, normalize_title_ref(title)]:
+                if key:
+                    by_reference[str(key)] = item
+
+        rows = []
+        for evidence in synthesis.get("evidence_index") or []:
+            if not isinstance(evidence, dict):
+                continue
+            claim = str(evidence.get("claim") or "").strip()
+            for paper_ref in evidence.get("papers") or []:
+                item = by_reference.get(str(paper_ref)) or by_reference.get(normalize_title_ref(str(paper_ref)))
+                if not item:
+                    rows.append([short_cell(claim), short_cell(str(paper_ref)), "", "", ""])
+                    continue
+                rows.append(self.evidence_row(claim, item))
+                if len(rows) >= 12:
+                    return rows
+
+        if rows:
+            return rows
+        for item in analyses[: self.max_papers_per_domain]:
+            analysis = item.get("analysis") or {}
+            claim = analysis.get("research_problem") or first_string(analysis.get("core_findings")) or ""
+            if not claim:
+                continue
+            rows.append(self.evidence_row(str(claim), item))
+            if len(rows) >= 8:
+                break
+        return rows
+
+    def evidence_row(self, claim: str, item: dict) -> list[str]:
+        paper = item.get("paper") or {}
+        analysis = item.get("analysis") or {}
+        evidence_chunk = first_dict(analysis.get("evidence_chunks"))
+        supporting_text = first_string(analysis.get("supporting_text"))
+        evidence_id = evidence_chunk.get("chunk_id", "") if evidence_chunk else ""
+        section = evidence_chunk.get("section", "") if evidence_chunk else ""
+        paper_label = paper.get("paper_id") or paper.get("title") or "paper"
+        if paper.get("title") and paper.get("paper_id"):
+            paper_label = f"{paper.get('paper_id')}: {paper.get('title')}"
+        return [
+            short_cell(claim),
+            short_cell(paper_label),
+            short_cell(evidence_id),
+            short_cell(section),
+            short_cell(supporting_text),
+        ]
 
     def abstract_paragraph(self, data: dict) -> str:
         summary = data["summary"]
@@ -369,6 +576,11 @@ class FinalSurveyReportBuilder:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
+    def report_overview_dir(self) -> Path:
+        agent_summary = self.read_json(self.agent_dir / "agent_input_summary.json", {}) if self.agent_dir else {}
+        major_domain = agent_summary.get("major_domain") or major_domain_name(agent_summary.get("project_name") or "survey")
+        return report_data_dir(self.reports_dir, major_domain)
+
 
 def inferred_title(pipeline: dict, agent_summary: dict) -> str:
     query = pipeline.get("query") or agent_summary.get("project_name") or "Literature Survey"
@@ -436,6 +648,37 @@ def clean_cell(value) -> str:
     text = str(value if value is not None else "").replace("\n", " ")
     text = text.replace("|", "/")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def short_cell(value, limit: int = 180) -> str:
+    text = clean_cell(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def normalize_title_ref(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(title).casefold()).strip()
+
+
+def first_string(values) -> str:
+    if isinstance(values, str):
+        return values
+    if isinstance(values, list):
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value
+    return ""
+
+
+def first_dict(values) -> dict:
+    if isinstance(values, dict):
+        return values
+    if isinstance(values, list):
+        for value in values:
+            if isinstance(value, dict):
+                return value
+    return {}
 
 
 def keyword_summary(text: str, limit: int = 8) -> list[str]:
@@ -545,6 +788,7 @@ def run_from_args(args) -> int:
     builder = FinalSurveyReportBuilder(
         results_dir=Path(args.results_dir),
         agent_dir=Path(args.agent_dir) if getattr(args, "agent_dir", None) else None,
+        reports_dir=Path(args.reports_dir) if getattr(args, "reports_dir", None) else None,
         out=Path(args.out) if getattr(args, "out", None) else None,
         html_out=Path(args.html_out) if getattr(args, "html_out", None) else None,
         title=getattr(args, "title", ""),
@@ -560,6 +804,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build a final academic-style survey report from existing outputs.")
     parser.add_argument("--results-dir", required=True)
     parser.add_argument("--agent-dir")
+    parser.add_argument("--reports-dir")
     parser.add_argument("--out")
     parser.add_argument("--html-out")
     parser.add_argument("--title", default="")

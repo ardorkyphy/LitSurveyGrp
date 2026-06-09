@@ -102,11 +102,11 @@ def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_pa
     assert outputs.classified_manifest.name == "classified_manifest.json"
     assert outputs.stats_dir.name == "stats"
     assert outputs.dashboard.name == "research_dashboard.html"
-    assert outputs.references_dir.name == "references"
+    assert outputs.references_dir == tmp_path / "reports" / "LLM_causal_discovery" / "data" / "references"
     assert outputs.final_manifest == outputs.classified_manifest
     assert [call[0] for call in calls] == ["download", "enrich", "classify", "stats", "visualize", "references"]
     assert calls[0][1].name == "papers"
-    assert calls[0][2].name == "results"
+    assert calls[0][2] == tmp_path / "reports" / "LLM_causal_discovery" / "data"
     assert calls[0][3][0].provider == "openalex-search"
     assert calls[0][3][0].query == "LLM causal discovery"
     assert calls[0][4] == 50
@@ -156,7 +156,7 @@ def test_survey_pipeline_can_skip_optional_steps(monkeypatch, tmp_path):
     outputs = service.run()
     report = json.loads(outputs.pipeline_report.read_text(encoding="utf-8"))
 
-    assert outputs.final_manifest == tmp_path / "results" / "article_manifest.json"
+    assert outputs.final_manifest == tmp_path / "reports" / "aging" / "data" / "article_manifest.json"
     assert outputs.enriched_manifest is None
     assert outputs.classified_manifest is None
     assert report["steps"] == {
@@ -309,6 +309,7 @@ def test_survey_command_service_runs_core_stages_in_order(monkeypatch, tmp_path)
     def fake_pdf_run(self):
         calls.append(("pdf", self.kwargs))
         manifest = self.kwargs["results_dir"] / "pdf_downloaded_manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
         manifest.write_text("[]", encoding="utf-8")
         return {"manifest": manifest}
 
@@ -340,8 +341,10 @@ def test_survey_command_service_runs_core_stages_in_order(monkeypatch, tmp_path)
     def fake_report_build(self):
         calls.append(("report", self.kwargs))
         results_dir = self.kwargs["results_dir"]
-        md = results_dir / "final_survey_report.md"
-        html = results_dir / "final_survey_report.html"
+        report_dir = self.kwargs["reports_dir"] / "AI_in_neuroscience" / "data"
+        md = report_dir / "final_survey_report.md"
+        html = report_dir / "final_survey_report.html"
+        report_dir.mkdir(parents=True, exist_ok=True)
         md.write_text("# report", encoding="utf-8")
         html.write_text("<html></html>", encoding="utf-8")
         return {"markdown": md, "html": html}
@@ -368,12 +371,16 @@ def test_survey_command_service_runs_core_stages_in_order(monkeypatch, tmp_path)
         query="AI in neuroscience",
         limit=200,
         top_papers=30,
+        pdfs_per_domain=30,
         top_domains=8,
-        per_domain=20,
+        per_domain=30,
         domain_rules="rules.json",
         enrichment_workers=4,
         classification_workers=3,
         agent_provider="dry-run",
+        agent_workers=3,
+        agent_max_chunks_per_paper=7,
+        agent_max_chunk_chars=1600,
     )).run()
 
     assert [call[0] for call in calls] == [
@@ -390,11 +397,21 @@ def test_survey_command_service_runs_core_stages_in_order(monkeypatch, tmp_path)
     assert calls[0][1]["domain_rules"] == "rules.json"
     assert calls[0][1]["enrichment_workers"] == 4
     assert calls[0][1]["classification_workers"] == 3
-    assert calls[1][1]["top"] == 30
+    assert calls[1][1]["top"] == 8
+    assert calls[1][1]["per_domain"] == 30
     assert calls[2][1]["top_domains"] == 8
-    assert calls[2][1]["per_domain"] == 20
+    assert calls[2][1]["per_domain"] == 30
+    assert calls[2][1]["papers_dir"] == tmp_path / "run" / "papers"
+    assert calls[2][1]["results_dir"] == tmp_path / "run" / "results"
+    assert calls[2][1]["selection"] == "top-downloaded-pdfs"
+    assert calls[2][1]["top_papers"] == 240
     assert calls[3][1]["provider"] == "dry-run"
-    assert calls[5][1]["agent_dir"] == tmp_path / "run" / "agent_inputs"
+    assert calls[3][1]["results_dir"] == tmp_path / "run" / "results"
+    assert calls[3][1]["workers"] == 3
+    assert calls[3][1]["input_mode"] == "evidence-chunks"
+    assert calls[3][1]["max_chunks_per_paper"] == 7
+    assert calls[3][1]["max_chunk_chars"] == 1600
+    assert calls[5][1]["agent_dir"] == tmp_path / "run" / "results" / "Neuroscience"
     assert outputs.final_manifest.name == "pdf_downloaded_manifest.json"
     assert outputs.html_report.name == "final_survey_report.html"
     assert outputs.references_dir is None
@@ -418,6 +435,8 @@ def test_survey_command_service_can_analyze_references_between_pdf_and_agents(mo
         self.require_doi_for_download = kwargs["require_doi_for_download"]
         self.reference_query = kwargs["reference_query"]
         self.metadata_sources = kwargs["metadata_sources"]
+        self.papers_dir = kwargs["papers_dir"]
+        self.project_name = kwargs["project_name"]
 
     monkeypatch.setattr("litsurveygrp.pipeline.SurveyPipelineService.run", lambda self: calls.append("pipeline") or FakePipelineOutputs())
     monkeypatch.setattr("litsurveygrp.pipeline.TopPdfDownloadService.run", lambda self: calls.append("pdf") or {"manifest": tmp_path / "pdf.json"})
@@ -455,7 +474,9 @@ def test_survey_command_service_can_analyze_references_between_pdf_and_agents(mo
     ]
     reference_service = calls[2][1]
     assert reference_service.manifest_path == tmp_path / "pdf.json"
-    assert reference_service.out_dir == tmp_path / "run" / "results" / "references"
+    assert reference_service.out_dir == tmp_path / "run" / "reports" / "analysis" / "data" / "references"
+    assert reference_service.papers_dir == tmp_path / "run" / "papers"
+    assert reference_service.project_name == ""
     assert reference_service.max_references_per_paper == 40
     assert reference_service.max_total_references == 400
     assert reference_service.relevance_threshold == 0.35
@@ -464,7 +485,7 @@ def test_survey_command_service_can_analyze_references_between_pdf_and_agents(mo
     assert reference_service.require_doi_for_download is True
     assert reference_service.reference_query == "foundation papers"
     assert reference_service.metadata_sources == ["openalex"]
-    assert outputs.references_dir == tmp_path / "run" / "results" / "references"
+    assert outputs.references_dir == tmp_path / "run" / "reports" / "analysis" / "data" / "references"
 
 
 def test_survey_command_service_can_skip_agents(monkeypatch, tmp_path):
@@ -506,6 +527,7 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
         sources = ["openalex"]
         request_interval = 1.5
         top_papers = 12
+        pdfs_per_domain = 3
         top_domains = 4
         per_domain = 6
         download_workers = 3
@@ -516,6 +538,10 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
         agent_model = ""
         agent_base_url = "https://api.deepseek.com"
         agent_cache_dir = str(tmp_path / "cache")
+        agent_workers = 4
+        agent_input_mode = "full-text"
+        agent_max_chunks_per_paper = 5
+        agent_max_chunk_chars = 1400
         skip_agents = True
         no_extract_pdf_text = True
         max_text_chars = 5000
@@ -548,10 +574,15 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
     assert config.keywords == ["AI"]
     assert config.metadata_sources == ["openalex"]
     assert config.top_papers == 12
+    assert config.pdfs_per_domain == 3
     assert config.agent_provider == "deepseek"
     assert config.agent_model == "deepseek-v4-flash"
     assert config.agent_base_url == "https://api.deepseek.com"
     assert config.agent_cache_dir.name == "cache"
+    assert config.agent_workers == 4
+    assert config.agent_input_mode == "full-text"
+    assert config.agent_max_chunks_per_paper == 5
+    assert config.agent_max_chunk_chars == 1400
     assert config.run_agents is False
     assert config.extract_pdf_text is False
     assert config.domain_rules == "rules.json"
@@ -567,4 +598,78 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
     assert config.reference_query == "foundation papers"
     assert config.reference_sources == ["openalex"]
     assert config.clean_existing is True
+
+
+def test_survey_command_cli_adapter_applies_customer_aliases(monkeypatch, tmp_path):
+    captured = {}
+
+    class Args:
+        out = str(tmp_path / "run")
+        query = "Causal Discovery"
+        journal = None
+        preset = "full"
+        pdfs = 30
+        domains = 8
+        papers_per_domain = 25
+        model_provider = "openai"
+        model = "gpt-4.1"
+        workers = 4
+        limit = 1000
+        per_journal_limit = None
+        from_year = None
+        to_year = None
+        keyword = []
+        article_type = []
+        min_citations = None
+        sources = None
+        request_interval = None
+        enrichment_workers = None
+        top_papers = None
+        pdfs_per_domain = None
+        top_domains = None
+        per_domain = None
+        download_workers = None
+        download_timeout = 15
+        min_value_score = None
+        require_doi = False
+        agent_provider = None
+        agent_model = None
+        agent_base_url = ""
+        agent_cache_dir = None
+        agent_workers = None
+        agent_input_mode = None
+        agent_max_chunks_per_paper = None
+        agent_max_chunk_chars = None
+        skip_agents = False
+        no_extract_pdf_text = False
+        max_text_chars = 0
+        title = ""
+        domain_rules = ""
+        classification_workers = None
+        analyze_references = False
+        max_references_per_paper = 50
+        max_total_references = 1000
+        reference_relevance_threshold = 0.30
+        max_reference_downloads = 0
+        min_reference_value_score = 0.45
+        require_reference_doi = False
+        reference_query = ""
+        reference_sources = None
+        clean_existing = False
+
+    def fake_run(self):
+        captured["config"] = self.config
+        return None
+
+    monkeypatch.setattr(SurveyCommandService, "run", fake_run)
+
+    assert run_survey_from_args(Args()) == 0
+    config = captured["config"]
+    assert config.pdfs_per_domain == 30
+    assert config.top_domains == 8
+    assert config.per_domain == 25
+    assert config.download_workers == 4
+    assert config.agent_workers == 4
+    assert config.agent_provider == "openai"
+    assert config.agent_model == "gpt-4.1"
 

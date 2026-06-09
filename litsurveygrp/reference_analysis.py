@@ -18,6 +18,7 @@ from litsurveygrp.paper_classifier import SentenceTransformerEmbedder
 from litsurveygrp.paper_models import ArticleRecord, ReferenceRecord
 from litsurveygrp.pdf_utils import PdfDownloader
 from litsurveygrp.reference_extractor import PdfReferenceExtractor
+from litsurveygrp.analysis_paths import article_subdomain, major_domain_name, report_data_dir
 
 
 DEFAULT_REFERENCE_SOURCES = ["openalex", "europe-pmc", "crossref"]
@@ -181,6 +182,8 @@ class ReferenceAnalysisService:
         self,
         manifest_path: Path,
         out_dir: Path | None = None,
+        papers_dir: Path | None = None,
+        project_name: str = "",
         max_references_per_paper: int | None = 50,
         max_total_references: int | None = 1000,
         relevance_threshold: float = 0.30,
@@ -197,7 +200,13 @@ class ReferenceAnalysisService:
         downloader=None,
     ):
         self.manifest_path = Path(manifest_path)
-        self.out_dir = Path(out_dir) if out_dir else self.manifest_path.parent / "references"
+        self.papers_dir = Path(papers_dir) if papers_dir else self.manifest_path.parent.parent / "papers"
+        self.major_domain = major_domain_name(project_name)
+        self.out_dir = (
+            Path(out_dir)
+            if out_dir
+            else report_data_dir(self.manifest_path.parent.parent / "reports", self.major_domain) / "references"
+        )
         self.max_references_per_paper = max_references_per_paper
         self.max_total_references = max_total_references
         self.relevance_threshold = relevance_threshold
@@ -299,7 +308,10 @@ class ReferenceAnalysisService:
     def download_top_references(self, references: list[ReferenceRecord]) -> None:
         if self.max_reference_downloads <= 0:
             return
-        downloader = self.downloader or PdfDownloader(self.out_dir / "reference_papers")
+        downloader = self.downloader or PdfDownloader(
+            self.papers_dir,
+            domain_path_func=lambda article: (self.major_domain, article_subdomain(article, "references")),
+        )
         downloaded = 0
         for reference in references:
             if downloaded >= self.max_reference_downloads:
@@ -320,6 +332,7 @@ class ReferenceAnalysisService:
                 authors=list(reference.authors),
                 abstract=reference.abstract,
                 citation_count=reference.citation_count,
+                subdomain="References",
             )
             article = downloader.download(article)
             reference.pdf_url = article.pdf_url
@@ -438,6 +451,8 @@ def run_from_args(args) -> int:
     service = ReferenceAnalysisService(
         Path(args.manifest),
         out_dir=Path(args.out_dir) if getattr(args, "out_dir", None) else None,
+        papers_dir=Path(args.papers_dir) if getattr(args, "papers_dir", None) else None,
+        project_name=getattr(args, "project_name", ""),
         max_references_per_paper=getattr(args, "max_references_per_paper", 50),
         max_total_references=getattr(args, "max_total_references", 1000),
         relevance_threshold=getattr(args, "reference_relevance_threshold", 0.30),

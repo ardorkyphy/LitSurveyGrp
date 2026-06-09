@@ -54,9 +54,19 @@ papers_*/
 ai_in_neuroscience/
 quantum_for_ai/
 *_smoke/
+*_run/
+*_run_*/
+reports/
 
 # Local model/cache data
 .cache/
 models/
+agents/models/
 *.pdf
 *.tmp
+
+# Local presentation/demo artifacts
+*.pptx
+PPTresource.md
+architecture_diagram.*
+build_aging_ppt*.py

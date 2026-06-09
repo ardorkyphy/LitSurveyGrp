@@ -15,6 +15,8 @@ def test_cli_survey_arguments_are_core_workflow_focused():
         "200",
         "--top-papers",
         "30",
+        "--pdfs-per-domain",
+        "30",
         "--top-domains",
         "8",
         "--per-domain",
@@ -27,6 +29,14 @@ def test_cli_survey_arguments_are_core_workflow_focused():
         "deepseek-v4-flash",
         "--agent-base-url",
         "https://api.deepseek.com",
+        "--agent-workers",
+        "3",
+        "--agent-input-mode",
+        "evidence-chunks",
+        "--agent-max-chunks-per-paper",
+        "9",
+        "--agent-max-chunk-chars",
+        "1800",
         "--enrichment-workers",
         "4",
         "--classification-workers",
@@ -59,12 +69,17 @@ def test_cli_survey_arguments_are_core_workflow_focused():
     assert args.query == "AI in neuroscience"
     assert args.limit == 200
     assert args.top_papers == 30
+    assert args.pdfs_per_domain == 30
     assert args.top_domains == 8
     assert args.per_domain == 20
     assert args.download_workers == 4
     assert args.agent_provider == "deepseek"
     assert args.agent_model == "deepseek-v4-flash"
     assert args.agent_base_url == "https://api.deepseek.com"
+    assert args.agent_workers == 3
+    assert args.agent_input_mode == "evidence-chunks"
+    assert args.agent_max_chunks_per_paper == 9
+    assert args.agent_max_chunk_chars == 1800
     assert args.enrichment_workers == 4
     assert args.classification_workers == 4
     assert args.domain_rules == "rules.json"
@@ -78,6 +93,39 @@ def test_cli_survey_arguments_are_core_workflow_focused():
     assert args.reference_query == "foundation papers"
     assert args.reference_sources == ["openalex", "crossref"]
     assert args.title == "AI Neuroscience Survey"
+
+
+def test_cli_survey_customer_friendly_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "survey",
+        "--out",
+        "run",
+        "--query",
+        "Causal Discovery",
+        "--preset",
+        "full",
+        "--pdfs",
+        "30",
+        "--domains",
+        "8",
+        "--papers-per-domain",
+        "30",
+        "--model-provider",
+        "openai",
+        "--model",
+        "gpt-4.1",
+        "--workers",
+        "4",
+    ])
+
+    assert args.preset == "full"
+    assert args.pdfs == 30
+    assert args.domains == 8
+    assert args.papers_per_domain == 30
+    assert args.model_provider == "openai"
+    assert args.model == "gpt-4.1"
+    assert args.workers == 4
 
 
 def test_cli_report_arguments():
@@ -108,8 +156,8 @@ def test_cli_monitor_arguments():
     parser = build_parser()
     args = parser.parse_args([
         "monitor",
-        "--results-dir",
-        r"D:\中文路径\results",
+        "--dir",
+        r"D:\中文路径\reports\analysis\data",
         "--open",
         "--once",
         "--interval",
@@ -117,10 +165,22 @@ def test_cli_monitor_arguments():
     ])
 
     assert args.command == "monitor"
-    assert args.results_dir.endswith("results")
+    assert args.results_dir.endswith("data")
     assert args.open is True
     assert args.once is True
     assert args.interval == 2
+
+
+def test_cli_top_level_help_hides_internal_stage_commands(capsys):
+    parser = build_parser()
+
+    parser.print_help()
+    help_text = capsys.readouterr().out
+
+    assert "download-pdfs" not in help_text
+    assert "prepare-agent-input" not in help_text
+    assert "survey" in help_text
+    assert "monitor" in help_text
 
 
 def test_cli_clean_arguments():
@@ -164,8 +224,12 @@ def test_stage_commands_are_public_cli():
         "0.5",
         "--download-workers",
         "3",
+        "--per-domain",
+        "2",
         "--require-doi",
         "--include-existing",
+        "--monitor-dir",
+        "reports/analysis/data",
     ])
     assert download.command == "download-pdfs"
     assert download.manifest == "classified.json"
@@ -174,19 +238,29 @@ def test_stage_commands_are_public_cli():
     assert download.top == 12
     assert download.min_value_score == 0.5
     assert download.download_workers == 3
+    assert download.per_domain == 2
     assert download.require_doi is True
     assert download.include_existing is True
+    assert download.monitor_dir == "reports/analysis/data"
 
     agent_input = parser.parse_args([
         "prepare-agent-input",
         "--manifest",
         "pdf_manifest.json",
         "--out-dir",
-        "agent_inputs",
+        "data",
+        "--papers-dir",
+        "papers",
+        "--results-dir",
+        "results",
         "--top-domains",
         "5",
         "--per-domain",
         "8",
+        "--selection",
+        "top-downloaded-pdfs",
+        "--top-papers",
+        "30",
         "--copy-pdfs",
         "--extract-pdf-text",
         "--project-name",
@@ -194,9 +268,13 @@ def test_stage_commands_are_public_cli():
     ])
     assert agent_input.command == "prepare-agent-input"
     assert agent_input.manifest == "pdf_manifest.json"
-    assert agent_input.out_dir == "agent_inputs"
+    assert agent_input.out_dir == "data"
+    assert agent_input.papers_dir == "papers"
+    assert agent_input.results_dir == "results"
     assert agent_input.top_domains == 5
     assert agent_input.per_domain == 8
+    assert agent_input.selection == "top-downloaded-pdfs"
+    assert agent_input.top_papers == 30
     assert agent_input.copy_pdfs is True
     assert agent_input.extract_pdf_text is True
     assert agent_input.project_name == "demo"
@@ -248,3 +326,12 @@ def test_stage_commands_are_public_cli():
     assert visualize.manifest == "classified.json"
     assert visualize.out_dir == "viz"
     assert visualize.top == 9
+def test_cli_pdf_download_defaults_to_parallel_workers():
+    parser = build_parser()
+
+    survey = parser.parse_args(["survey", "--out", "run", "--query", "causal discovery"])
+    download = parser.parse_args(["download-pdfs", "--manifest", "classified.json", "--papers-dir", "papers"])
+
+    assert survey.download_workers is None
+    assert survey.preset == "balanced"
+    assert download.download_workers == 8

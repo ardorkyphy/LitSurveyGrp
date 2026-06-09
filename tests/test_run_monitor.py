@@ -42,6 +42,38 @@ def test_run_monitor_can_be_disabled(tmp_path):
     assert not (tmp_path / "results" / "run_monitor.html").exists()
 
 
+def test_stage_monitor_updates_shared_html_without_finishing_parent(tmp_path):
+    monitor = RunMonitor(tmp_path / "reports")
+    monitor.start("Full survey", "Starting")
+
+    child = monitor.child("paper_reader_agent")
+    child.start("Paper reader", "Reading PDFs", metrics={"workers": 3})
+    child.update(processed=2, total=5, current_item="paper 2")
+    child.finish("completed", "Paper reader done")
+
+    status = json.loads((tmp_path / "reports" / "run_status.json").read_text(encoding="utf-8"))
+    html = (tmp_path / "reports" / "run_monitor.html").read_text(encoding="utf-8")
+
+    assert status["run_name"] == "Full survey"
+    assert status["status"] == "running"
+    assert status["stage"] == "paper_reader_agent"
+    assert status["processed"] == 2
+    assert status["total"] == 5
+    assert "paper_reader_agent:completed" in html
+
+
+def test_stage_monitor_supports_direct_write_calls(tmp_path):
+    monitor = RunMonitor(tmp_path / "reports")
+    monitor.start("Full survey", "Starting")
+    child = monitor.child("metadata_pipeline")
+
+    child.state["metrics"] = {"source": "openalex"}
+    child.write()
+
+    status = json.loads((tmp_path / "reports" / "run_status.json").read_text(encoding="utf-8"))
+    assert status["metrics"]["source"] == "openalex"
+
+
 def test_run_monitor_viewer_creates_idle_monitor_and_prints_paths(tmp_path):
     printed = []
     opened = []

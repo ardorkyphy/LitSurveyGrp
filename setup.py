@@ -21,6 +21,7 @@ setuptools.setup(
         "requests>=2.31",
         "scikit-learn>=1.3",
         "sentence-transformers>=2.2",
+        "sentencepiece>=0.2",
     ],
     extras_require={
         "pdf": ["PyMuPDF>=1.23"],

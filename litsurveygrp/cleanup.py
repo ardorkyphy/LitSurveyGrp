@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_CLEAN_TARGETS = ["papers", "results"]
+DEFAULT_CLEAN_TARGETS = ["papers", "results", "reports"]
 
 
 @dataclass

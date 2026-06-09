@@ -8,15 +8,18 @@ from litsurveygrp.cleanup import GeneratedOutputCleaner, run_from_args
 def test_cleaner_deletes_default_generated_dirs(tmp_path):
     papers = tmp_path / "papers"
     results = tmp_path / "results"
+    reports = tmp_path / "reports"
     papers.mkdir()
     results.mkdir()
+    reports.mkdir()
     (papers / "paper.pdf").write_text("pdf", encoding="utf-8")
 
     outputs = GeneratedOutputCleaner(workspace=tmp_path).run()
 
-    assert [item.status for item in outputs] == ["deleted", "deleted"]
+    assert [item.status for item in outputs] == ["deleted", "deleted", "deleted"]
     assert not papers.exists()
     assert not results.exists()
+    assert not reports.exists()
 
 
 def test_cleaner_dry_run_does_not_delete(tmp_path):

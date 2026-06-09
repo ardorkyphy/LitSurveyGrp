@@ -56,8 +56,8 @@ python -m pip install sentence-transformers scikit-learn
 ```
 
 The project supports Chinese paths. Generated files are intended to be written
-under local `papers/` and `results/` directories or user-specified output
-directories.
+under local `papers/`, `results/`, and `reports/` directories or user-specified
+output directories.
 
 ## Common Commands
 
@@ -77,7 +77,7 @@ lsg survey `
   --out nature_aging `
   --journal nature-aging `
   --limit 50 `
-  --download-workers 4 `
+  --download-workers 8 `
   --analyze-references
 ```
 
@@ -90,22 +90,22 @@ lsg survey `
   --out nature_aging_large `
   --journal nature-aging `
   --per-journal-limit 150 `
-  --top-papers 0 `
+  --preset metadata `
   --skip-agents
 ```
 
 PDF download is optional and slower. The public `survey` command downloads only
-the top-ranked papers; use `--top-papers 0` to skip that stage.
+the top-ranked papers; use `--preset metadata` or `--pdfs 0` to skip that stage.
 
 Download PDFs later by top research value:
 
 ```powershell
 lsg download-pdfs `
-  --manifest results\classified_manifest.json `
+  --manifest reports\<大领域>\data\classified_manifest.json `
   --papers-dir papers `
-  --results-dir results `
+  --results-dir reports\<大领域>\data `
   --top 20 `
-  --download-workers 4
+  --download-workers 8
 ```
 
 This separate PDF stage ranks the manifest first and then attempts only the
@@ -114,19 +114,57 @@ review-entry value, classification confidence, and metadata completeness. The
 main hyperparameter is `--top`; users can also add `--min-value-score`,
 `--require-doi`, or `--include-existing`.
 
-Repeat runs reuse cached OpenAlex pages from `results/metadata_cache` by
+Repeat runs reuse cached OpenAlex pages from `reports/<大领域>/data/metadata_cache` by
 default.
 
 Prepare top papers for LLM research agents:
 
 ```powershell
 lsg prepare-agent-input `
-  --manifest results\pdf_downloaded_manifest.json `
-  --out-dir agent_inputs\demo `
+  --manifest reports\<大领域>\data\pdf_downloaded_manifest.json `
+  --out-dir results\<大领域> `
+  --papers-dir papers `
+  --results-dir results `
+  --reports-dir reports `
   --project-name demo `
-  --top-domains 10 `
-  --per-domain 30
+  --selection top-downloaded-pdfs `
+  --pdfs 30 `
+  --max-text-chars 0
 ```
+
+The survey command now keeps extracted PDF text by default
+(`--max-text-chars 0`) and controls LLM cost at the agent layer. The paper
+agent defaults to `--agent-input-mode evidence-chunks`: local code splits full
+text into section-aware chunks, selects the chunks most relevant to research
+problem, methods, findings, and limitations, and sends only those chunks to the
+LLM. For API-backed runs, start with conservative parallelism:
+
+```powershell
+lsg survey `
+  --out agent_demo `
+  --query "Large Language Model causal discovery" `
+  --agent-provider deepseek `
+  --agent-workers 3 `
+  --agent-input-mode evidence-chunks `
+  --agent-max-chunks-per-paper 12 `
+  --agent-max-chunk-chars 2200 `
+  --agent-cache-dir agent_demo\agent_cache
+```
+
+Final reports include an evidence trace table for domain-level claims. The
+table links claims to paper IDs/titles, selected chunk IDs, chunk sections, and
+supporting snippets when available. Invalid agent outputs are written as
+`*.error.json` and excluded from final reports.
+
+Local retrieval models can be stored under `agents/models/`. Start with the
+embedding model:
+
+```powershell
+python -m agents.local_models download --endpoint https://hf-mirror.com --no-reranker
+python -m agents.local_models self-test --no-reranker
+```
+
+The optional reranker can be downloaded later by omitting `--no-reranker`.
 
 Run a keyword-based survey across journals:
 
@@ -162,13 +200,16 @@ lsg clean --target papers --target results
 Run individual steps:
 
 ```powershell
-lsg enrich-metadata --manifest results\article_manifest.json --out results\enriched_manifest.json
-lsg classify-papers --manifest results\enriched_manifest.json --out-dir results --organize-dir papers
-lsg stats --manifest results\classified_manifest.json --out-dir results\stats
-lsg visualize --manifest results\classified_manifest.json --out-dir results\visualization
-lsg download-pdfs --manifest results\classified_manifest.json --papers-dir papers --results-dir results --top 20
-lsg prepare-agent-input --manifest results\pdf_downloaded_manifest.json --out-dir agent_inputs\demo --top-domains 10 --per-domain 30
+lsg enrich-metadata --manifest reports\<大领域>\data\article_manifest.json --out reports\<大领域>\data\enriched_manifest.json
+lsg classify-papers --manifest reports\<大领域>\data\enriched_manifest.json --out-dir reports\<大领域>\data --organize-dir papers
+lsg stats --manifest reports\<大领域>\data\classified_manifest.json --out-dir reports\<大领域>\data\stats
+lsg visualize --manifest reports\<大领域>\data\classified_manifest.json --out-dir reports\<大领域>\data\visualization
+lsg download-pdfs --manifest reports\<大领域>\data\classified_manifest.json --papers-dir papers --results-dir reports\<大领域>\data --top 20
+lsg prepare-agent-input --manifest reports\<大领域>\data\pdf_downloaded_manifest.json --out-dir results\<大领域> --papers-dir papers --results-dir results --reports-dir reports --selection top-downloaded-pdfs --top-papers 30
 ```
+
+These staged commands are intended for internal debugging and advanced
+parameter tuning. For normal use, prefer `lsg survey`.
 
 ## Output Layout
 
@@ -176,43 +217,55 @@ Typical full-pipeline outputs:
 
 ```text
 papers/
-  all_papers/
-  Topic_.../
+  <major_domain>/
+    <subdomain>/
 
 results/
-  article_manifest.json
-  enriched_manifest.json
-  classified_manifest.json
-  metadata_cache/
-  download_report.csv
-  pdf_download_ranking.csv
-  pdf_downloaded_manifest.json
-  pdf_download_report.csv
-  pdf_download_summary.json
-  pipeline_report.json
-  stats/
-    summary.json
-    research_profile.json
-    topic_profiles.csv
-    paper_recommendations.csv
-    reference_insights.csv
-    author_stats.csv
-    institution_stats.csv
-    journal_stats.csv
-    year_trend.csv
-  visualization/
-    research_dashboard.html
-  references/
-    reference_manifest.json
-    reference_candidates.csv
-    reference_summary.json
+  <major_domain>/
+    <subdomain>/
+
+reports/
+  <major_domain>/
+    data/
+      article_manifest.json
+      enriched_manifest.json
+      classified_manifest.json
+      metadata_cache/
+      pdf_downloaded_manifest.json
+      pipeline_report.json
+      run_monitor.html
+      run_status.json
+      download_report.csv
+      pdf_download_ranking.csv
+      pdf_download_report.csv
+      pdf_download_summary.json
+      stats/
+      visualization/
+        research_dashboard.html
+      references/
+        reference_manifest.json
+        reference_candidates.csv
+        reference_summary.json
+    <subdomain>/
+      domain_report.md
+      final_survey_report.md
+      final_survey_report.html
 ```
 
 The main dashboard is:
 
 ```text
-results/visualization/research_dashboard.html
+reports/<大领域>/data/visualization/research_dashboard.html
 ```
+
+The live monitor is one auto-refreshing HTML file for the whole workflow:
+
+```text
+reports/<大领域>/data/run_monitor.html
+```
+
+It tracks metadata collection, PDF download, agent input preparation, paper
+reading, domain synthesis, and final report generation in the same page.
 
 ## Tasks Already Tried
 
@@ -332,7 +385,7 @@ lsg survey `
   --out nature_aging `
   --journal nature-aging `
   --limit 50 `
-  --download-workers 4 `
+  --download-workers 8 `
   --analyze-references
 ```
 
@@ -349,18 +402,28 @@ lsg survey `
 ```
 
 PDF 下载是可选项且速度较慢。`survey` 默认只尝试下载排名靠前的论文；
-使用 `--top-papers 0` 可以跳过这个阶段，也可以配合 `--download-workers`
-并发下载。
+使用 `--preset metadata` 或 `--pdfs 0` 可以跳过这个阶段，也可以配合
+`--download-workers` 并发下载。默认 PDF 下载并发为 8。
+
+Agent 分析默认采用 `evidence-chunks` 模式：PDF 文本会完整抽取并保存在本地
+（`--max-text-chars 0` 表示不截断），随后本地按章节切块并筛选与研究问题、
+方法、发现、局限最相关的证据块，再把这些证据块送入 LLM。这样不会简单截取
+论文开头，也能控制 token 成本。API 模型建议先用 `--agent-workers 2` 或
+`--agent-workers 3`，并配合 `--agent-cache-dir` 复用重复运行的结果。
+
+最终报告会为领域级结论补充 evidence trace 表，把 claim 关联到 paper id/标题、
+chunk id、章节和 supporting snippet；验证失败的 agent 输出会写入
+`*.error.json`，不会进入最终报告。
 
 也可以先完整跑完元数据、分类、统计和可视化，再按研究价值排序下载最值得看的 PDF：
 
 ```powershell
 lsg download-pdfs `
-  --manifest results\classified_manifest.json `
+  --manifest reports\<大领域>\data\classified_manifest.json `
   --papers-dir papers `
-  --results-dir results `
+  --results-dir reports\<大领域>\data `
   --top 20 `
-  --download-workers 4
+  --download-workers 8
 ```
 
 这里的 `--top` 是“下载排名前几篇 PDF”的超参。排序综合考虑引用量、期刊水平、年份新近度、综述入口价值、分类置信度和元数据完整度。还可以使用 `--min-value-score`、`--require-doi`、`--include-existing` 控制候选范围。
@@ -385,19 +448,22 @@ lsg clean --target papers --target results
 
 ## 输出结果
 
-完整流程会在 `papers/` 中保存 PDF，并按自动聚类出来的领域整理文件夹；在 `results/` 中保存元数据、统计表格、引用文献分析和可视化 dashboard。
+完整流程固定使用 `papers/`、`results/`、`reports/` 三个根目录：PDF 保存在 `papers/<大领域>/<小领域>/`，agent 输入与分析中间产物保存在 `results/<大领域>/<小领域>/`，元数据、CSV、JSON、HTML、monitor 等调研记录保存在 `reports/<大领域>/data/`，小领域报告和总报告保存在 `reports/<大领域>/<小领域>/`。
 
 最重要的结果文件包括：
 
-- `results/classified_manifest.json`
-- `results/stats/research_profile.json`
-- `results/stats/topic_profiles.csv`
-- `results/stats/paper_recommendations.csv`
-- `results/stats/reference_insights.csv`
-- `results/visualization/research_dashboard.html`
-- `results/references/reference_manifest.json`
-- `results/pdf_download_ranking.csv`
-- `results/pdf_downloaded_manifest.json`
+- `reports/<大领域>/data/classified_manifest.json`
+- `reports/<大领域>/data/stats/research_profile.json`
+- `reports/<大领域>/data/stats/topic_profiles.csv`
+- `reports/<大领域>/data/stats/paper_recommendations.csv`
+- `reports/<大领域>/data/stats/reference_insights.csv`
+- `reports/<大领域>/data/visualization/research_dashboard.html`
+- `results/<大领域>/<小领域>/domain_synthesis.json`
+- `reports/<大领域>/<小领域>/domain_report.md`
+- `reports/<大领域>/<小领域>/final_survey_report.md`
+- `reports/<大领域>/data/references/reference_manifest.json`
+- `reports/<大领域>/data/pdf_download_ranking.csv`
+- `reports/<大领域>/data/pdf_downloaded_manifest.json`
 
 ## 已经尝试过的任务
 

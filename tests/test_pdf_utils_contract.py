@@ -77,8 +77,8 @@ def test_pdf_path_builder_creates_dirs_and_sanitizes_names(tmp_path):
     )
     path = builder.build_pdf_path(article)
 
-    assert (tmp_path / "all_papers").exists()
     assert (tmp_path / ".tmp").exists()
+    assert path.parent == tmp_path / "Other" / "Other"
     assert path.name == "（2026，NA）Bad（Smith，Institute A）.pdf"
     assert builder.sanitize_filename('bad:name?.pdf') == "bad_name_.pdf"
 
@@ -380,7 +380,7 @@ def test_download_converts_html_article_to_pdf(tmp_path):
 
 
 def test_download_skips_existing_pdf_before_network_call(tmp_path):
-    existing = tmp_path / "all_papers" / "（2026，NA）Existing paper（Smith，Institute）.pdf"
+    existing = tmp_path / "Other" / "Other" / "（2026，NA）Existing paper（Smith，Institute）.pdf"
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"%PDF- existing")
     downloader = PdfDownloader(tmp_path, session=FailingSession())
@@ -403,7 +403,7 @@ def test_download_skips_existing_pdf_before_network_call(tmp_path):
 
 
 def test_download_renames_doi_named_existing_pdf_before_network_call(tmp_path):
-    doi_named = tmp_path / "all_papers" / "10.1038_s43587-026-01122-1.pdf"
+    doi_named = tmp_path / "Other" / "Other" / "10.1038_s43587-026-01122-1.pdf"
     doi_named.parent.mkdir(parents=True)
     doi_named.write_bytes(b"%PDF- existing")
     downloader = PdfDownloader(tmp_path, session=FailingSession())
@@ -420,7 +420,7 @@ def test_download_renames_doi_named_existing_pdf_before_network_call(tmp_path):
         )
     )
 
-    expected = tmp_path / "all_papers" / "（2026，NA）Renamed paper（Author，Institution）.pdf"
+    expected = tmp_path / "Other" / "Other" / "（2026，NA）Renamed paper（Author，Institution）.pdf"
     assert article.download_status == "skipped_existing_renamed"
     assert article.pdf_status == "complete"
     assert article.local_pdf_path == expected
@@ -429,8 +429,8 @@ def test_download_renames_doi_named_existing_pdf_before_network_call(tmp_path):
 
 
 def test_download_cleans_old_semantic_variant_when_final_exists(tmp_path):
-    final_path = tmp_path / "all_papers" / "（2026，NA）Urinary detection（Hartono，Department）.pdf"
-    old_variant = tmp_path / "all_papers" / "（2026，NA）Urinary detection（Hartono，Department and.pdf"
+    final_path = tmp_path / "Other" / "Other" / "（2026，NA）Urinary detection（Hartono，Department）.pdf"
+    old_variant = tmp_path / "Other" / "Other" / "（2026，NA）Urinary detection（Hartono，Department and.pdf"
     final_path.parent.mkdir(parents=True)
     final_path.write_bytes(b"%PDF- final")
     old_variant.write_bytes(b"%PDF- duplicate")

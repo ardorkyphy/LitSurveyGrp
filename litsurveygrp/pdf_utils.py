@@ -20,6 +20,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     fitz = None
 
+from litsurveygrp.analysis_paths import article_major_domain, article_subdomain
 from litsurveygrp.paper_models import ArticleRecord, PdfValidationResult
 
 
@@ -147,19 +148,21 @@ class OpenAccessPdfResolver:
 class PdfPathBuilder:
     """Create stable output paths and filenames for downloaded papers."""
 
-    def __init__(self, output_dir: Path):
+    def __init__(self, output_dir: Path, domain_path_func=None):
         self.output_dir = Path(output_dir)
+        self.domain_path_func = domain_path_func or self.default_domain_path
 
     def ensure_output_dirs(self) -> None:
-        """Create required output directories such as all_papers/."""
-        (self.output_dir / "all_papers").mkdir(parents=True, exist_ok=True)
+        """Create required temporary output directory."""
         (self.output_dir / ".tmp").mkdir(parents=True, exist_ok=True)
 
     def build_pdf_path(self, article: ArticleRecord) -> Path:
         """Return the final PDF path for an article."""
         self.ensure_output_dirs()
         filename = self.build_pdf_filename(article)
-        return self.output_dir / "all_papers" / filename
+        domain_dir = self.domain_path(article)
+        domain_dir.mkdir(parents=True, exist_ok=True)
+        return domain_dir / filename
 
     def build_pdf_filename(self, article: ArticleRecord) -> str:
         """Build '(year,journal)title(author,institution).pdf' style filename."""
@@ -180,7 +183,7 @@ class PdfPathBuilder:
         doi_part = article.doi.replace("/", "_").replace("\\", "_").strip()
         if not doi_part:
             return None
-        return self.output_dir / "all_papers" / (self.sanitize_filename(doi_part) + ".pdf")
+        return self.domain_path(article) / (self.sanitize_filename(doi_part) + ".pdf")
 
     def existing_pdf_path(self, article: ArticleRecord) -> Path | None:
         """Find an existing PDF for this article under current or compatible naming."""
@@ -220,19 +223,30 @@ class PdfPathBuilder:
 
     def find_semantic_variants(self, article: ArticleRecord) -> list[Path]:
         """Find semantic-name variants for the same article title."""
-        all_papers = self.output_dir / "all_papers"
-        if not all_papers.exists() or not article.title:
+        domain_dir = self.domain_path(article)
+        search_dirs = [domain_dir, self.output_dir / "all_papers"]
+        if not article.title:
             return []
         year = self._year(article.publish_date)
         journal = self._journal_abbrev(article.journal)
         prefix = self.sanitize_filename(f"（{year}，{journal}）", max_length=40)
         title_marker = self.sanitize_filename(article.title, max_length=40)
         matches = []
-        for candidate in all_papers.glob("*.pdf"):
-            name = candidate.name
-            if name.startswith(prefix) and title_marker in name:
-                matches.append(candidate)
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            for candidate in search_dir.glob("*.pdf"):
+                name = candidate.name
+                if name.startswith(prefix) and title_marker in name:
+                    matches.append(candidate)
         return sorted(matches)
+
+    def domain_path(self, article: ArticleRecord) -> Path:
+        major_domain, subdomain = self.domain_path_func(article)
+        return self.output_dir / major_domain / subdomain
+
+    def default_domain_path(self, article: ArticleRecord) -> tuple[str, str]:
+        return article_major_domain(article), article_subdomain(article)
 
     def sanitize_filename(self, value: str, max_length: int = 160) -> str:
         """Return a Windows-safe filename segment."""
@@ -363,6 +377,7 @@ class PdfDownloader:
         session=None,
         file_operation_retries: int = 5,
         file_operation_retry_delay: float = 0.5,
+        domain_path_func=None,
     ):
         self.output_dir = Path(output_dir)
         self.timeout = timeout
@@ -370,7 +385,7 @@ class PdfDownloader:
         self.session = session or requests.Session()
         self.file_operation_retries = file_operation_retries
         self.file_operation_retry_delay = file_operation_retry_delay
-        self.paths = PdfPathBuilder(self.output_dir)
+        self.paths = PdfPathBuilder(self.output_dir, domain_path_func=domain_path_func)
         self.converter = HtmlXmlToPdfConverter()
         self.oa_resolver = OpenAccessPdfResolver(session=self.session, timeout=timeout)
 

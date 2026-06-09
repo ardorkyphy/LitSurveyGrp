@@ -93,6 +93,9 @@ class RunMonitor:
         self.add_event(status, message or status)
         self.write()
 
+    def child(self, stage: str) -> "StageRunMonitor":
+        return StageRunMonitor(self, stage)
+
     def add_event(self, event_type: str, message: str) -> None:
         events = list(self.state.get("events") or [])
         events.append({
@@ -205,6 +208,73 @@ class RunMonitor:
 
     def escape(self, value: Any) -> str:
         return html.escape(str(value if value is not None else ""))
+
+
+class StageRunMonitor:
+    """Proxy a sub-stage into one shared run monitor without closing the parent run."""
+
+    def __init__(self, parent: RunMonitor, stage: str):
+        self.parent = parent
+        self.stage = stage
+        self.out_dir = parent.out_dir
+        self.status_path = parent.status_path
+        self.html_path = parent.html_path
+        self.enabled = parent.enabled
+
+    def start(self, run_name: str, message: str = "", metrics: dict | None = None) -> None:
+        text = message or run_name
+        self.parent.add_event(f"{self.stage}:started", text)
+        self.parent.update(
+            stage=self.stage,
+            message=text,
+            processed=0,
+            total=None,
+            current_item="",
+            metrics=metrics,
+            status="running",
+        )
+
+    def update(
+        self,
+        stage: str | None = None,
+        message: str | None = None,
+        processed: int | None = None,
+        total: int | None = None,
+        current_item: str | None = None,
+        metrics: dict | None = None,
+        status: str = "running",
+    ) -> None:
+        child_stage = stage or self.stage
+        self.parent.update(
+            stage=f"{self.stage}.{child_stage}" if child_stage != self.stage else self.stage,
+            message=message,
+            processed=processed,
+            total=total,
+            current_item=current_item,
+            metrics=metrics,
+            status=status,
+        )
+
+    def finish(self, status: str = "completed", message: str = "") -> None:
+        text = message or status
+        self.parent.add_event(f"{self.stage}:{status}", text)
+        parent_status = "failed" if status == "failed" else "running"
+        self.parent.update(
+            stage=self.stage,
+            message=text,
+            status=parent_status,
+        )
+
+    def add_event(self, event_type: str, message: str) -> None:
+        self.parent.add_event(f"{self.stage}:{event_type}", message)
+        self.parent.write()
+
+    def write(self) -> None:
+        self.parent.write()
+
+    @property
+    def state(self) -> dict:
+        return self.parent.state
 
 
 class RunMonitorViewer:
