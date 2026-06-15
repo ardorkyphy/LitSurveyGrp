@@ -15,6 +15,8 @@ env/
 build/
 dist/
 *.egg-info/
+node_modules/
+*.tsbuildinfo
 
 # Local environment
 .env
@@ -57,6 +59,10 @@ quantum_for_ai/
 *_run/
 *_run_*/
 reports/
+single_paper_runs/
+federated_causal_learning_survey/
+agent_cache/
+*/agent_cache/
 
 # Local model/cache data
 .cache/
@@ -70,3 +76,8 @@ agents/models/
 PPTresource.md
 architecture_diagram.*
 build_aging_ppt*.py
+
+# Desktop app build output
+apps/desktop/build/
+apps/desktop/dist/
+apps/desktop/release/

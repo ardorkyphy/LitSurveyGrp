@@ -11,6 +11,10 @@ The default workflow is metadata-first. It quickly collects candidate papers,
 classifies and ranks them, then lets you download or analyze only the most
 valuable papers.
 
+You can also run focused stages without launching a full survey. Use
+`fetch-pdf` to find and download PDFs from a title or keyword query, and
+`analyze-pdf` to analyze one local PDF with the paper agent.
+
 ## Quick Start
 
 Install in editable mode from the project root:
@@ -42,6 +46,41 @@ Optional API configuration can be provided through environment variables. Copy
 `.env.example` to `.env` for local use, and never commit `.env`.
 
 ## Common Workflows
+
+Download a PDF by exact title:
+
+```powershell
+lsg fetch-pdf `
+  --out paper_fetch `
+  --title "The Hallmarks of Aging" `
+  --limit 5 `
+  --top 1
+```
+
+For broader keyword-based PDF fetching:
+
+```powershell
+lsg fetch-pdf `
+  --out senescence_pdf_fetch `
+  --query "cellular senescence aging intervention" `
+  --limit 20 `
+  --top 5
+```
+
+Analyze one local PDF directly:
+
+```powershell
+lsg analyze-pdf `
+  --pdf papers\paper.pdf `
+  --out single_paper_report `
+  --title "Paper title" `
+  --model-provider deepseek `
+  --agent-cache-dir single_paper_report\agent_cache
+```
+
+`analyze-pdf` defaults to `--agent-input-mode full-text` so it can run without
+local retrieval models. Use `--agent-input-mode evidence-chunks` after deploying
+the optional local embedding/reranker models when you want shorter LLM prompts.
 
 Minimal metadata-first run:
 

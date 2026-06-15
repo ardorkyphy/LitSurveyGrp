@@ -3,7 +3,7 @@ import argparse
 
 def build_parser():
     parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command", metavar="{survey,monitor,clean,list-journals}")
+    subparsers = parser.add_subparsers(dest="command", metavar="{survey,fetch-pdf,analyze-pdf,monitor,clean,list-journals}")
 
     survey = subparsers.add_parser("survey", help="run the metadata-to-agent-report workflow")
     survey.add_argument("--out", required=True, help="run output root; papers, results, and reports are written under it")
@@ -41,6 +41,8 @@ def build_parser():
     survey.add_argument("--agent-max-chunk-chars", type=int, default=None, help=argparse.SUPPRESS)
     survey.add_argument("--skip-agents", action="store_true", help="prepare agent inputs but skip LLM analysis")
     survey.add_argument("--no-extract-pdf-text", action="store_true", help="do not extract downloaded PDF text for agents")
+    survey.add_argument("--skip-stage", action="append", default=[], help=argparse.SUPPRESS)
+    survey.add_argument("--stage-mode", action="append", default=[], help=argparse.SUPPRESS)
     survey.add_argument("--max-text-chars", type=int, default=0, help=argparse.SUPPRESS)
     survey.add_argument("--domain-rules", default="", help=argparse.SUPPRESS)
     survey.add_argument("--analyze-references", action="store_true", help="also analyze cited references")
@@ -54,6 +56,41 @@ def build_parser():
     survey.add_argument("--reference-sources", nargs="+", choices=["openalex", "semantic-scholar", "europe-pmc", "crossref"], help=argparse.SUPPRESS)
     survey.add_argument("--title", default="", help="final report title")
     survey.add_argument("--clean-existing", action="store_true", help="remove existing papers/results directories before running")
+
+    fetch_pdf = subparsers.add_parser("fetch-pdf", help="find papers by title or keyword query and download PDFs")
+    fetch_pdf.add_argument("--out", required=True, help="run output root; papers and reports are written under it")
+    fetch_pdf.add_argument("--title", default="", help="paper title to search for; defaults to downloading the best match")
+    fetch_pdf.add_argument("--query", default="", help="keyword query to search for")
+    fetch_pdf.add_argument("--limit", type=int, default=5, help="maximum candidate papers to discover")
+    fetch_pdf.add_argument("--top", type=int, default=1, help="candidate PDFs to attempt after ranking or title matching")
+    fetch_pdf.add_argument("--sources", nargs="+", default=None, choices=["openalex", "crossref", "europe-pmc"], help="metadata search sources")
+    fetch_pdf.add_argument("--download-workers", type=int, default=8, help="parallel PDF download workers")
+    fetch_pdf.add_argument("--timeout", type=int, default=15, help="HTTP timeout in seconds")
+    fetch_pdf.add_argument("--require-doi", action="store_true", help="skip candidates without DOI")
+    fetch_pdf.add_argument("--include-existing", action="store_true", help="include already downloaded PDFs in the selected set")
+    fetch_pdf.add_argument("--monitor-dir", help=argparse.SUPPRESS)
+    fetch_pdf.add_argument("--no-monitor", action="store_true", help=argparse.SUPPRESS)
+
+    analyze_pdf = subparsers.add_parser("analyze-pdf", help="analyze one local PDF with the paper agent")
+    analyze_pdf.add_argument("--pdf", required=True, help="local PDF path")
+    analyze_pdf.add_argument("--out", required=True, help="run output root; package, analysis, and report are written under it")
+    analyze_pdf.add_argument("--title", default="", help="paper title; defaults to the PDF filename")
+    analyze_pdf.add_argument("--doi", default="", help="paper DOI")
+    analyze_pdf.add_argument("--journal", default="", help="paper journal or venue")
+    analyze_pdf.add_argument("--publish-date", default="", help="paper publication date or year")
+    analyze_pdf.add_argument("--abstract", default="", help="paper abstract, if known")
+    analyze_pdf.add_argument("--model-provider", dest="model_provider", default="dry-run", choices=["dry-run", "openai", "deepseek"], help="LLM provider")
+    analyze_pdf.add_argument("--model", default="", help="LLM model name")
+    analyze_pdf.add_argument("--agent-base-url", default="", help=argparse.SUPPRESS)
+    analyze_pdf.add_argument("--agent-cache-dir", help="directory for LLM response cache")
+    analyze_pdf.add_argument("--agent-input-mode", default="full-text", choices=["evidence-chunks", "full-text"], help=argparse.SUPPRESS)
+    analyze_pdf.add_argument("--agent-max-chunks-per-paper", type=int, default=12, help=argparse.SUPPRESS)
+    analyze_pdf.add_argument("--agent-max-chunk-chars", type=int, default=2200, help=argparse.SUPPRESS)
+    analyze_pdf.add_argument("--max-text-chars", type=int, default=0, help=argparse.SUPPRESS)
+    analyze_pdf.add_argument("--copy-pdf", action="store_true", help="copy the source PDF into the output papers directory")
+    analyze_pdf.add_argument("--overwrite", action="store_true", help="overwrite existing agent outputs")
+    analyze_pdf.add_argument("--monitor-dir", help=argparse.SUPPRESS)
+    analyze_pdf.add_argument("--no-monitor", action="store_true", help=argparse.SUPPRESS)
 
     report = subparsers.add_parser("report", help=argparse.SUPPRESS)
     report.add_argument("--results-dir", required=True)
@@ -166,6 +203,12 @@ def main():
     if args.command == "survey":
         from litsurveygrp.pipeline import run_survey_from_args
         return run_survey_from_args(args)
+    if args.command == "fetch-pdf":
+        from litsurveygrp.title_pdf_fetch import run_from_args
+        return run_from_args(args)
+    if args.command == "analyze-pdf":
+        from litsurveygrp.single_paper_analysis import run_from_args
+        return run_from_args(args)
     if args.command == "report":
         from litsurveygrp.final_report import run_from_args
         return run_from_args(args)

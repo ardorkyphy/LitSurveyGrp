@@ -5,7 +5,38 @@ import json
 import pytest
 
 from litsurveygrp.paper_models import ArticleRecord
-from litsurveygrp.pipeline import SurveyCommandConfig, SurveyCommandService, SurveyPipelineService, run_from_args, run_survey_from_args
+from litsurveygrp.pipeline import (
+    COMMAND_STAGES,
+    STAGE_AGENT_INPUT,
+    STAGE_FINAL_REPORT,
+    STAGE_PDF_DOWNLOAD,
+    STAGE_PAPER_AGENTS,
+    STAGE_STATS,
+    StageControl,
+    SurveyCommandConfig,
+    SurveyCommandService,
+    SurveyPipelineService,
+    run_from_args,
+    run_survey_from_args,
+)
+
+
+def test_stage_control_supports_disable_and_mode_aliases():
+    control = StageControl.from_values(
+        disabled=["stats", "pdf"],
+        modes=["pdf_download=top-ranked", "final-report=minimal"],
+        allowed=COMMAND_STAGES,
+    )
+
+    assert control.is_enabled(STAGE_STATS) is False
+    assert control.is_enabled(STAGE_PDF_DOWNLOAD) is False
+    assert control.mode(STAGE_PDF_DOWNLOAD) == "top-ranked"
+    assert control.mode(STAGE_FINAL_REPORT) == "minimal"
+    assert control.to_dict() == {
+        "final_report": {"enabled": True, "mode": "minimal"},
+        "pdf_download": {"enabled": False, "mode": "top-ranked"},
+        "stats": {"enabled": False, "mode": "default"},
+    }
 
 
 def test_survey_pipeline_wires_default_directories_and_steps(monkeypatch, tmp_path):
@@ -167,6 +198,45 @@ def test_survey_pipeline_can_skip_optional_steps(monkeypatch, tmp_path):
         "visualization": False,
         "reference_analysis": False,
     }
+
+
+def test_survey_pipeline_honors_stage_control_for_optional_outputs(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_download(self):
+        calls.append("download")
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        article = ArticleRecord(title="Aging paper")
+        (self.results_dir / "article_manifest.json").write_text(
+            json.dumps([article.to_manifest_dict()], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.results_dir / "download_report.csv").write_text("title\n", encoding="utf-8")
+        return [article]
+
+    monkeypatch.setattr("litsurveygrp.pipeline.MultiJournalDownloadService.run", fake_download)
+    monkeypatch.setattr("litsurveygrp.pipeline.ResearchStatsWriter.write", lambda self: calls.append("stats") or {})
+    monkeypatch.setattr("litsurveygrp.pipeline.ResearchDashboardWriter.write", lambda self: calls.append("visualize") or self.out_dir / "dashboard.html")
+
+    stage_control = StageControl.from_values(disabled=["stats", "visualization"])
+    service = SurveyPipelineService(
+        papers_dir=tmp_path / "papers",
+        results_dir=tmp_path / "results",
+        enrich_metadata=False,
+        classify_papers=False,
+        stage_control=stage_control,
+    )
+
+    outputs = service.run()
+    report = json.loads(outputs.pipeline_report.read_text(encoding="utf-8"))
+
+    assert calls == ["download"]
+    assert outputs.stats_dir is None
+    assert outputs.dashboard is None
+    assert report["steps"]["stats"] is False
+    assert report["steps"]["visualization"] is False
+    assert report["stage_control"]["stats"]["enabled"] is False
+    assert report["stage_control"]["visualization"]["enabled"] is False
 
 
 def test_survey_pipeline_uses_metadata_cache_env(monkeypatch, tmp_path):
@@ -510,6 +580,35 @@ def test_survey_command_service_can_skip_agents(monkeypatch, tmp_path):
     assert calls == ["pipeline", "pdf", "agent_input", "report"]
 
 
+def test_survey_command_service_honors_stage_control(monkeypatch, tmp_path):
+    calls = []
+
+    class FakePipelineOutputs:
+        download_manifest = tmp_path / "run" / "results" / "article_manifest.json"
+        final_manifest = tmp_path / "run" / "results" / "classified_manifest.json"
+
+    monkeypatch.setattr("litsurveygrp.pipeline.SurveyPipelineService.run", lambda self: calls.append("pipeline") or FakePipelineOutputs())
+    monkeypatch.setattr("litsurveygrp.pipeline.TopPdfDownloadService.run", lambda self: calls.append("pdf") or {"manifest": tmp_path / "pdf.json"})
+    monkeypatch.setattr("litsurveygrp.pipeline.AgentInputPreparer.run", lambda self: calls.append("agent_input") or {})
+    monkeypatch.setattr("litsurveygrp.pipeline.FinalSurveyReportBuilder.build", lambda self: calls.append("report") or {
+        "markdown": tmp_path / "report.md",
+        "html": tmp_path / "report.html",
+    })
+
+    stage_control = StageControl.from_values(
+        disabled=[STAGE_PDF_DOWNLOAD, STAGE_AGENT_INPUT, STAGE_FINAL_REPORT],
+    )
+    outputs = SurveyCommandService(SurveyCommandConfig(
+        out_dir=tmp_path / "run",
+        stage_control=stage_control,
+        run_agents=False,
+    )).run()
+
+    assert calls == ["pipeline"]
+    assert outputs.pdf_manifest == tmp_path / "run" / "results" / "classified_manifest.json"
+    assert outputs.html_report is None
+
+
 def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
     captured = {}
 
@@ -559,6 +658,8 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
         reference_query = "foundation papers"
         reference_sources = ["openalex"]
         clean_existing = True
+        skip_stage = []
+        stage_mode = []
 
     def fake_run(self):
         captured["config"] = self.config
@@ -598,6 +699,81 @@ def test_survey_command_cli_adapter_runs(monkeypatch, tmp_path):
     assert config.reference_query == "foundation papers"
     assert config.reference_sources == ["openalex"]
     assert config.clean_existing is True
+
+
+def test_survey_command_cli_adapter_builds_stage_control(monkeypatch, tmp_path):
+    captured = {}
+
+    class Args:
+        out = str(tmp_path / "run")
+        query = ""
+        journal = ["nature-aging"]
+        preset = "balanced"
+        pdfs = None
+        domains = None
+        papers_per_domain = None
+        model_provider = None
+        model = None
+        workers = None
+        limit = None
+        per_journal_limit = None
+        from_year = None
+        to_year = None
+        keyword = []
+        article_type = []
+        min_citations = None
+        sources = None
+        request_interval = None
+        enrichment_workers = None
+        top_papers = None
+        pdfs_per_domain = None
+        top_domains = None
+        per_domain = None
+        download_workers = None
+        download_timeout = 15
+        min_value_score = None
+        require_doi = False
+        agent_provider = None
+        agent_model = None
+        agent_base_url = ""
+        agent_cache_dir = None
+        agent_workers = None
+        agent_input_mode = None
+        agent_max_chunks_per_paper = None
+        agent_max_chunk_chars = None
+        skip_agents = True
+        no_extract_pdf_text = False
+        max_text_chars = 0
+        title = ""
+        domain_rules = ""
+        classification_workers = None
+        analyze_references = False
+        max_references_per_paper = 50
+        max_total_references = 1000
+        reference_relevance_threshold = 0.30
+        max_reference_downloads = 0
+        min_reference_value_score = 0.45
+        require_reference_doi = False
+        reference_query = ""
+        reference_sources = None
+        clean_existing = False
+        skip_stage = []
+        stage_mode = []
+        skip_stage = ["pdf", "final-report"]
+        stage_mode = ["pdf_download=top-ranked"]
+
+    def fake_run(self):
+        captured["config"] = self.config
+        return None
+
+    monkeypatch.setattr(SurveyCommandService, "run", fake_run)
+
+    assert run_survey_from_args(Args()) == 0
+    config = captured["config"]
+    assert config.stage_enabled(STAGE_PDF_DOWNLOAD) is False
+    assert config.stage_enabled(STAGE_FINAL_REPORT) is False
+    assert config.stage_enabled(STAGE_PAPER_AGENTS) is False
+    assert config.stage_control.mode(STAGE_PDF_DOWNLOAD) == "top-ranked"
 
 
 def test_survey_command_cli_adapter_applies_customer_aliases(monkeypatch, tmp_path):

@@ -128,6 +128,88 @@ def test_cli_survey_customer_friendly_arguments():
     assert args.workers == 4
 
 
+def test_cli_survey_stage_control_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "survey",
+        "--out",
+        "run",
+        "--skip-stage",
+        "stats",
+        "--skip-stage",
+        "visualization",
+        "--stage-mode",
+        "pdf_download=top-ranked",
+        "--stage-mode",
+        "paper_agents=disabled",
+    ])
+
+    assert args.skip_stage == ["stats", "visualization"]
+    assert args.stage_mode == ["pdf_download=top-ranked", "paper_agents=disabled"]
+
+
+def test_cli_fetch_pdf_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "fetch-pdf",
+        "--out",
+        "pdf_run",
+        "--title",
+        "A precise paper title",
+        "--limit",
+        "8",
+        "--top",
+        "2",
+        "--sources",
+        "openalex",
+        "crossref",
+        "--download-workers",
+        "3",
+        "--require-doi",
+    ])
+
+    assert args.command == "fetch-pdf"
+    assert args.out == "pdf_run"
+    assert args.title == "A precise paper title"
+    assert args.limit == 8
+    assert args.top == 2
+    assert args.sources == ["openalex", "crossref"]
+    assert args.download_workers == 3
+    assert args.require_doi is True
+
+
+def test_cli_analyze_pdf_arguments():
+    parser = build_parser()
+    args = parser.parse_args([
+        "analyze-pdf",
+        "--pdf",
+        "paper.pdf",
+        "--out",
+        "single",
+        "--title",
+        "Single Paper",
+        "--model-provider",
+        "deepseek",
+        "--model",
+        "deepseek-v4-flash",
+        "--agent-cache-dir",
+        "cache",
+        "--copy-pdf",
+        "--overwrite",
+    ])
+
+    assert args.command == "analyze-pdf"
+    assert args.pdf == "paper.pdf"
+    assert args.out == "single"
+    assert args.title == "Single Paper"
+    assert args.model_provider == "deepseek"
+    assert args.model == "deepseek-v4-flash"
+    assert args.agent_cache_dir == "cache"
+    assert args.agent_input_mode == "full-text"
+    assert args.copy_pdf is True
+    assert args.overwrite is True
+
+
 def test_cli_report_arguments():
     parser = build_parser()
     args = parser.parse_args([
@@ -180,6 +262,8 @@ def test_cli_top_level_help_hides_internal_stage_commands(capsys):
     assert "download-pdfs" not in help_text
     assert "prepare-agent-input" not in help_text
     assert "survey" in help_text
+    assert "fetch-pdf" in help_text
+    assert "analyze-pdf" in help_text
     assert "monitor" in help_text
 
 

@@ -25,6 +25,22 @@ from litsurveygrp.pdf_download_stage import TopPdfDownloadService
 from litsurveygrp.reference_analysis import ReferenceAnalysisService
 from litsurveygrp.research_stats import ResearchStatsWriter
 from litsurveygrp.run_monitor import RunMonitor
+from litsurveygrp.stage_control import (
+    COMMAND_STAGES,
+    CORE_STAGES,
+    STAGE_AGENT_INPUT,
+    STAGE_CLASSIFICATION,
+    STAGE_DISCOVERY,
+    STAGE_DOMAIN_SYNTHESIS,
+    STAGE_ENRICHMENT,
+    STAGE_FINAL_REPORT,
+    STAGE_PAPER_AGENTS,
+    STAGE_PDF_DOWNLOAD,
+    STAGE_REFERENCE_ANALYSIS,
+    STAGE_STATS,
+    STAGE_VISUALIZATION,
+    StageControl,
+)
 from litsurveygrp.visualization import ResearchDashboardWriter
 
 
@@ -80,6 +96,7 @@ class SurveyPipelineConfig:
     reference_sources: list[str] | None = None
     top_n: int = 20
     clean_existing: bool = False
+    stage_control: StageControl = field(default_factory=StageControl)
 
     def __post_init__(self) -> None:
         self.papers_dir = Path(self.papers_dir)
@@ -89,6 +106,8 @@ class SurveyPipelineConfig:
             self.reference_out_dir = Path(self.reference_out_dir)
         if self.metadata_cache_dir is not None:
             self.metadata_cache_dir = Path(self.metadata_cache_dir)
+        if self.stage_control is None:
+            self.stage_control = StageControl()
         self.keywords = list(self.keywords or [])
         self.article_types = list(self.article_types or [])
         self.authors = list(self.authors or [])
@@ -204,6 +223,7 @@ class SurveyCommandConfig:
     reference_query: str = ""
     reference_sources: list[str] | None = None
     clean_existing: bool = False
+    stage_control: StageControl = field(default_factory=StageControl)
 
     def __post_init__(self) -> None:
         self.out_dir = Path(self.out_dir)
@@ -211,6 +231,8 @@ class SurveyCommandConfig:
         self.keywords = list(self.keywords or [])
         self.article_types = list(self.article_types or [])
         self.reference_sources = list(self.reference_sources or [])
+        if self.stage_control is None:
+            self.stage_control = StageControl()
         self.agent_model = self.agent_model or default_model_for_provider(self.agent_provider)
         self.pdfs_per_domain = max(0, int(self.pdfs_per_domain or 0))
         self.agent_workers = max(1, int(self.agent_workers or 1))
@@ -220,6 +242,22 @@ class SurveyCommandConfig:
         self.agent_max_chunk_chars = max(400, int(self.agent_max_chunk_chars or 2200))
         if self.agent_cache_dir is not None:
             self.agent_cache_dir = Path(self.agent_cache_dir)
+
+    def stage_enabled(self, stage: str) -> bool:
+        defaults = {
+            STAGE_DISCOVERY: True,
+            STAGE_ENRICHMENT: True,
+            STAGE_CLASSIFICATION: True,
+            STAGE_STATS: True,
+            STAGE_VISUALIZATION: True,
+            STAGE_PDF_DOWNLOAD: True,
+            STAGE_REFERENCE_ANALYSIS: self.analyze_references,
+            STAGE_AGENT_INPUT: True,
+            STAGE_PAPER_AGENTS: self.run_agents,
+            STAGE_DOMAIN_SYNTHESIS: self.run_agents,
+            STAGE_FINAL_REPORT: True,
+        }
+        return self.stage_control.is_enabled(stage, defaults.get(stage, True))
 
     @property
     def papers_dir(self) -> Path:
@@ -319,6 +357,7 @@ class SurveyPipelineService:
         reference_sources: list[str] | None = None,
         top_n: int = 20,
         clean_existing: bool = False,
+        stage_control: StageControl | None = None,
     ):
         if isinstance(papers_dir, SurveyPipelineConfig):
             self.config = papers_dir
@@ -373,7 +412,8 @@ class SurveyPipelineService:
                 reference_sources=reference_sources,
                 top_n=top_n,
                 clean_existing=clean_existing,
-        )
+                stage_control=stage_control or StageControl(),
+            )
         self.article_filter = self.config.build_article_filter()
         self.monitor = RunMonitor(self.report_overview_dir())
         self._sync_legacy_attributes()
@@ -423,6 +463,7 @@ class SurveyPipelineService:
         self.reference_sources = self.config.reference_sources
         self.top_n = self.config.top_n
         self.clean_existing = self.config.clean_existing
+        self.stage_control = self.config.stage_control
 
     def run(self) -> SurveyPipelineOutputs:
         """Execute the full survey workflow and return output paths."""
@@ -454,23 +495,27 @@ class SurveyPipelineService:
             download_manifest=self.report_overview_dir() / "article_manifest.json",
             download_report=self.report_overview_dir() / "download_report.csv",
         )
-        current_manifest = self._download(outputs)
-        if self.enrich_metadata:
+        if self.stage_enabled(STAGE_DISCOVERY):
+            current_manifest = self._download(outputs)
+        else:
+            current_manifest = outputs.download_manifest
+            self.monitor.update("download", "Paper discovery skipped", current_item=str(current_manifest))
+        if self.stage_enabled(STAGE_ENRICHMENT):
             current_manifest = self._enrich(current_manifest, outputs)
-        if self.classify_papers:
+        if self.stage_enabled(STAGE_CLASSIFICATION):
             current_manifest = self._classify(current_manifest, outputs)
-        if self.write_stats:
+        if self.stage_enabled(STAGE_STATS):
             self.monitor.update("stats", "Writing research statistics", current_item=str(current_manifest))
             outputs.stats_dir = self.report_overview_dir() / "stats"
             ResearchStatsWriter(current_manifest, out_dir=outputs.stats_dir, top_n=self.top_n).write()
-        if self.write_visualization:
+        if self.stage_enabled(STAGE_VISUALIZATION):
             self.monitor.update("visualize", "Writing offline research dashboard", current_item=str(current_manifest))
             outputs.dashboard = ResearchDashboardWriter(
                 current_manifest,
                 out_dir=self.report_overview_dir() / "visualization",
                 top_n=self.top_n,
             ).write()
-        if self.analyze_references:
+        if self.stage_enabled(STAGE_REFERENCE_ANALYSIS):
             self.monitor.update("references", "Analyzing cited references", current_item=str(current_manifest))
             outputs.references_dir = self.reference_out_dir or self.report_overview_dir() / "references"
             ReferenceAnalysisService(
@@ -493,6 +538,17 @@ class SurveyPipelineService:
         outputs.pipeline_report = self.write_pipeline_report(outputs)
         self.monitor.finish("completed", f"Pipeline finished: {outputs.final_manifest}")
         return outputs
+
+    def stage_enabled(self, stage: str) -> bool:
+        defaults = {
+            STAGE_DISCOVERY: True,
+            STAGE_ENRICHMENT: self.enrich_metadata,
+            STAGE_CLASSIFICATION: self.classify_papers,
+            STAGE_STATS: self.write_stats,
+            STAGE_VISUALIZATION: self.write_visualization,
+            STAGE_REFERENCE_ANALYSIS: self.analyze_references,
+        }
+        return self.stage_control.is_enabled(stage, defaults.get(stage, True))
 
     def _download(self, outputs: SurveyPipelineOutputs) -> Path:
         self.monitor.update("download", "Collecting paper records", current_item=", ".join(self.journal_specs or []))
@@ -599,13 +655,14 @@ class SurveyPipelineService:
         report["enrichment_workers"] = self.enrichment_workers
         report["classification_workers"] = self.classification_workers
         report["steps"] = {
-            "download": True,
-            "enrichment": self.enrich_metadata,
-            "classification": self.classify_papers,
-            "stats": self.write_stats,
-            "visualization": self.write_visualization,
-            "reference_analysis": self.analyze_references,
+            "download": self.stage_enabled(STAGE_DISCOVERY),
+            STAGE_ENRICHMENT: self.stage_enabled(STAGE_ENRICHMENT),
+            STAGE_CLASSIFICATION: self.stage_enabled(STAGE_CLASSIFICATION),
+            STAGE_STATS: self.stage_enabled(STAGE_STATS),
+            STAGE_VISUALIZATION: self.stage_enabled(STAGE_VISUALIZATION),
+            STAGE_REFERENCE_ANALYSIS: self.stage_enabled(STAGE_REFERENCE_ANALYSIS),
         }
+        report["stage_control"] = self.stage_control.to_dict()
         report["reference_analysis"] = {
             "max_references_per_paper": self.max_references_per_paper,
             "max_total_references": self.max_total_references,
@@ -682,27 +739,32 @@ class SurveyCommandService:
                 clean_existing=config.clean_existing,
                 domain_rules=config.domain_rules,
                 classification_workers=config.classification_workers,
+                stage_control=config.stage_control,
             )
             pipeline_service.monitor = self.monitor.child("metadata_pipeline")
             pipeline_outputs = pipeline_service.run()
 
-            pdf_outputs = TopPdfDownloadService(
-                manifest_path=pipeline_outputs.final_manifest,
-                papers_dir=config.papers_dir,
-                results_dir=config.report_data_dir,
-                top=config.top_domains if config.pdfs_per_domain > 0 else config.top_papers,
-                per_domain=config.pdfs_per_domain,
-                min_value_score=config.min_value_score,
-                download_workers=config.download_workers,
-                timeout=config.download_timeout,
-                require_doi=config.require_doi,
-                project_name=config.query or ", ".join(config.journal_specs),
-                monitor=self.monitor.child("pdf_download"),
-            ).run()
-            pdf_manifest = pdf_outputs["manifest"]
+            pdf_manifest = pipeline_outputs.final_manifest
+            if config.stage_enabled(STAGE_PDF_DOWNLOAD):
+                pdf_outputs = TopPdfDownloadService(
+                    manifest_path=pipeline_outputs.final_manifest,
+                    papers_dir=config.papers_dir,
+                    results_dir=config.report_data_dir,
+                    top=config.top_domains if config.pdfs_per_domain > 0 else config.top_papers,
+                    per_domain=config.pdfs_per_domain,
+                    min_value_score=config.min_value_score,
+                    download_workers=config.download_workers,
+                    timeout=config.download_timeout,
+                    require_doi=config.require_doi,
+                    project_name=config.query or ", ".join(config.journal_specs),
+                    monitor=self.monitor.child("pdf_download"),
+                ).run()
+                pdf_manifest = pdf_outputs["manifest"]
+            else:
+                self.monitor.update("pdf_download", "PDF download stage skipped", current_item=str(pdf_manifest))
 
             references_dir = None
-            if config.analyze_references:
+            if config.stage_enabled(STAGE_REFERENCE_ANALYSIS):
                 references_dir = config.report_data_dir / "references"
                 self.monitor.update("references", "Analyzing cited references", current_item=str(pdf_manifest))
                 ReferenceAnalysisService(
@@ -722,24 +784,27 @@ class SurveyCommandService:
                     request_interval=config.request_interval,
                 ).run()
 
-            AgentInputPreparer(
-                manifest_path=pdf_manifest,
-                out_dir=config.agent_dir,
-                papers_dir=config.papers_dir,
-                results_dir=config.results_dir,
-                reports_dir=config.reports_dir,
-                top_domains=config.top_domains,
-                per_domain=config.per_domain,
-                selection="top-downloaded-pdfs",
-                top_papers=config.top_papers if config.pdfs_per_domain <= 0 else max(config.top_papers, config.pdfs_per_domain * max(config.top_domains, 1)),
-                copy_pdfs=True,
-                extract_pdf_text=config.extract_pdf_text,
-                max_text_chars=config.max_text_chars,
-                project_name=config.query or ", ".join(config.journal_specs),
-                monitor=self.monitor.child("agent_input"),
-            ).run()
+            if config.stage_enabled(STAGE_AGENT_INPUT):
+                AgentInputPreparer(
+                    manifest_path=pdf_manifest,
+                    out_dir=config.agent_dir,
+                    papers_dir=config.papers_dir,
+                    results_dir=config.results_dir,
+                    reports_dir=config.reports_dir,
+                    top_domains=config.top_domains,
+                    per_domain=config.per_domain,
+                    selection="top-downloaded-pdfs",
+                    top_papers=config.top_papers if config.pdfs_per_domain <= 0 else max(config.top_papers, config.pdfs_per_domain * max(config.top_domains, 1)),
+                    copy_pdfs=True,
+                    extract_pdf_text=config.extract_pdf_text,
+                    max_text_chars=config.max_text_chars,
+                    project_name=config.query or ", ".join(config.journal_specs),
+                    monitor=self.monitor.child("agent_input"),
+                ).run()
+            else:
+                self.monitor.update("agent_input", "Agent input preparation skipped", current_item=str(pdf_manifest))
 
-            if config.run_agents:
+            if config.stage_enabled(STAGE_PAPER_AGENTS):
                 PaperReaderAgent(
                     input_dir=config.agent_dir,
                     results_dir=config.results_dir,
@@ -754,6 +819,7 @@ class SurveyCommandService:
                     max_chunk_chars=config.agent_max_chunk_chars,
                     monitor=self.monitor.child("paper_reader_agent"),
                 ).run()
+            if config.stage_enabled(STAGE_DOMAIN_SYNTHESIS):
                 DomainSynthesizerAgent(
                     input_dir=config.agent_dir,
                     results_dir=config.results_dir,
@@ -765,14 +831,18 @@ class SurveyCommandService:
                     monitor=self.monitor.child("domain_synthesizer_agent"),
                 ).run()
 
-            self.monitor.update("final_report", "Building final survey report")
-            report_outputs = FinalSurveyReportBuilder(
-                results_dir=config.results_dir,
-                agent_dir=config.agent_dir,
-                reports_dir=config.reports_dir,
-                title=config.report_title,
-            ).build()
-            self.monitor.finish("completed", f"Survey completed: {report_outputs['html']}")
+            report_outputs = {"markdown": None, "html": None}
+            if config.stage_enabled(STAGE_FINAL_REPORT):
+                self.monitor.update("final_report", "Building final survey report")
+                report_outputs = FinalSurveyReportBuilder(
+                    results_dir=config.results_dir,
+                    agent_dir=config.agent_dir,
+                    reports_dir=config.reports_dir,
+                    title=config.report_title,
+                ).build()
+                self.monitor.finish("completed", f"Survey completed: {report_outputs['html']}")
+            else:
+                self.monitor.finish("completed", f"Survey completed: {pdf_manifest}")
         except Exception as exc:
             self.monitor.finish("failed", f"Survey failed: {exc}")
             raise
@@ -854,6 +924,14 @@ def run_survey_from_args(args) -> int:
     papers_per_domain = getattr(args, "papers_per_domain", None)
     model_provider = getattr(args, "model_provider", None)
     model = getattr(args, "model", None)
+    skipped_stages = list(getattr(args, "skip_stage", None) or [])
+    if getattr(args, "skip_agents", False):
+        skipped_stages.extend([STAGE_PAPER_AGENTS, STAGE_DOMAIN_SYNTHESIS])
+    stage_control = StageControl.from_values(
+        disabled=skipped_stages,
+        modes=getattr(args, "stage_mode", None) or [],
+        allowed=COMMAND_STAGES,
+    )
     config = SurveyCommandConfig(
         out_dir=Path(args.out),
         journal_specs=getattr(args, "journal", None),
@@ -900,6 +978,7 @@ def run_survey_from_args(args) -> int:
         reference_query=getattr(args, "reference_query", ""),
         reference_sources=getattr(args, "reference_sources", None),
         clean_existing=getattr(args, "clean_existing", False),
+        stage_control=stage_control,
     )
     SurveyCommandService(config).run()
     return 0
@@ -907,6 +986,20 @@ def run_survey_from_args(args) -> int:
 
 def run_from_args(args) -> int:
     """CLI adapter for python -m litsurveygrp run-survey."""
+    skipped_stages = list(getattr(args, "skip_stage", None) or [])
+    if getattr(args, "skip_enrichment", False):
+        skipped_stages.append(STAGE_ENRICHMENT)
+    if getattr(args, "skip_classification", False):
+        skipped_stages.append(STAGE_CLASSIFICATION)
+    if getattr(args, "skip_stats", False):
+        skipped_stages.append(STAGE_STATS)
+    if getattr(args, "skip_visualization", False):
+        skipped_stages.append(STAGE_VISUALIZATION)
+    stage_control = StageControl.from_values(
+        disabled=skipped_stages,
+        modes=getattr(args, "stage_mode", None) or [],
+        allowed=CORE_STAGES,
+    )
     service = SurveyPipelineService(
         papers_dir=Path(args.papers_dir),
         results_dir=Path(args.results_dir),
@@ -954,6 +1047,7 @@ def run_from_args(args) -> int:
         reference_sources=getattr(args, "reference_sources", None),
         top_n=getattr(args, "top", 20),
         clean_existing=getattr(args, "clean_existing", False),
+        stage_control=stage_control,
     )
     service.run()
     return 0
